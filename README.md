@@ -230,4 +230,8 @@ The bootstrap installer expects prebuilt release assets named:
 
 ## License
 
-MIT - see [LICENSE](LICENSE) (TBD).
+MIT - see [LICENSE](LICENSE).
+
+`bigkis` is a clean-room reimplementation in Go inspired by
+[decman](https://github.com/kiviktnm/decman) (GPL-3.0). No decman source code
+is included or derived; the projects share design ideas only.
