@@ -17,7 +17,7 @@ on:
 
 jobs:
   release:
-    runs-on: docker
+    runs-on: codeberg-tiny
     container:
       image: golang:1.26
     steps:
