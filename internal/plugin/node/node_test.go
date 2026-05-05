@@ -5,7 +5,7 @@ import (
 	"sort"
 	"testing"
 
-	"github.com/georgepagarigan/bigkis/internal/config"
+	"codeberg.org/gurg/bigkis/internal/config"
 )
 
 func TestGroupDeclared_DefaultManager(t *testing.T) {

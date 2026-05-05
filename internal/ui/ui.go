@@ -43,13 +43,22 @@ func Default(assumeYes bool) *UI {
 func (u *UI) SetAssumeYes(yes bool) { u.yes = yes }
 
 func isColorTerminal() bool {
+	return IsColorTTY(os.Stdout)
+}
+
+// IsColorTTY returns true if color escapes should be emitted to f. Honors
+// NO_COLOR / FORCE_COLOR environment variables.
+func IsColorTTY(f *os.File) bool {
 	if os.Getenv("NO_COLOR") != "" {
 		return false
 	}
 	if os.Getenv("FORCE_COLOR") != "" {
 		return true
 	}
-	fi, err := os.Stdout.Stat()
+	if f == nil {
+		return false
+	}
+	fi, err := f.Stat()
 	if err != nil {
 		return false
 	}

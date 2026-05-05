@@ -2,10 +2,10 @@
 package plugin
 
 import (
-	"github.com/georgepagarigan/bigkis/internal/config"
-	"github.com/georgepagarigan/bigkis/internal/runner"
-	"github.com/georgepagarigan/bigkis/internal/state"
-	"github.com/georgepagarigan/bigkis/internal/ui"
+	"codeberg.org/gurg/bigkis/internal/config"
+	"codeberg.org/gurg/bigkis/internal/runner"
+	"codeberg.org/gurg/bigkis/internal/state"
+	"codeberg.org/gurg/bigkis/internal/ui"
 )
 
 // Plugin is the contract every package source implements. The orchestrator

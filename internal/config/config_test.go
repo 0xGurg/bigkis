@@ -185,3 +185,215 @@ func TestConfig_IsEnabled(t *testing.T) {
 		t.Error("flatpak should not be enabled")
 	}
 }
+
+// ---------- includes ----------
+
+func writeTOMLAt(t *testing.T, dir, name, body string) string {
+	t.Helper()
+	path := filepath.Join(dir, name)
+	if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
+		t.Fatalf("write %s: %v", name, err)
+	}
+	return path
+}
+
+func TestLoad_IncludeMergesPackagesAndScalars(t *testing.T) {
+	dir := t.TempDir()
+	writeTOMLAt(t, dir, "shared.toml", `
+[settings]
+aur_helper = "paru"
+
+[pacman]
+packages = ["base", "git"]
+`)
+	main := writeTOMLAt(t, dir, "system.toml", `
+[settings]
+include = ["shared.toml"]
+
+[pacman]
+packages = ["neovim"]
+`)
+	cfg, err := Load(main)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	want := []string{"base", "git", "neovim"}
+	if got := cfg.Pacman.Packages; !sameSet(got, want) {
+		t.Errorf("packages = %v, want union %v", got, want)
+	}
+	// Top-level should win for scalars when set, but it isn't set here, so
+	// the include's value carries through.
+	if cfg.Settings.AURHelper != "paru" {
+		t.Errorf("aur_helper = %q, want paru (from include)", cfg.Settings.AURHelper)
+	}
+	if len(cfg.SourcePaths) != 2 {
+		t.Errorf("SourcePaths = %v, want 2 entries", cfg.SourcePaths)
+	}
+}
+
+func TestLoad_TopLevelWinsForScalars(t *testing.T) {
+	dir := t.TempDir()
+	writeTOMLAt(t, dir, "shared.toml", `
+[settings]
+aur_helper   = "yay"
+node_manager = "npm"
+`)
+	main := writeTOMLAt(t, dir, "system.toml", `
+[settings]
+include      = ["shared.toml"]
+aur_helper   = "paru"
+node_manager = "pnpm"
+`)
+	cfg, err := Load(main)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.Settings.AURHelper != "paru" {
+		t.Errorf("aur_helper = %q, want paru (top-level wins)", cfg.Settings.AURHelper)
+	}
+	if cfg.Settings.NodeManager != "pnpm" {
+		t.Errorf("node_manager = %q, want pnpm (top-level wins)", cfg.Settings.NodeManager)
+	}
+}
+
+func TestLoad_IncludeCycleErrors(t *testing.T) {
+	dir := t.TempDir()
+	a := filepath.Join(dir, "a.toml")
+	b := filepath.Join(dir, "b.toml")
+	if err := os.WriteFile(a, []byte(`[settings]
+include = ["b.toml"]
+`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(b, []byte(`[settings]
+include = ["a.toml"]
+`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	_, err := Load(a)
+	if err == nil || !strings.Contains(err.Error(), "cycle") {
+		t.Fatalf("expected cycle error, got %v", err)
+	}
+}
+
+func TestLoad_IncludeRelativePathsResolveAgainstParent(t *testing.T) {
+	root := t.TempDir()
+	subDir := filepath.Join(root, "modules")
+	if err := os.MkdirAll(subDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	writeTOMLAt(t, subDir, "shell.toml", `[pacman]
+packages = ["fish"]
+`)
+	main := writeTOMLAt(t, root, "system.toml", `
+[settings]
+include = ["modules/shell.toml"]
+
+[pacman]
+packages = ["base"]
+`)
+	cfg, err := Load(main)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if !sameSet(cfg.Pacman.Packages, []string{"base", "fish"}) {
+		t.Errorf("packages = %v, want [base fish]", cfg.Pacman.Packages)
+	}
+}
+
+// ---------- host overlays ----------
+
+func TestLoad_HostOverlayApplies(t *testing.T) {
+	t.Setenv("HOSTNAME", "ignored-by-os.Hostname") // not actually used; keep test deterministic via overlay name
+	hostname, _ := os.Hostname()
+	if hostname == "" {
+		t.Skip("no hostname available; skipping")
+	}
+	path := writeTOML(t, `
+[pacman]
+packages = ["base"]
+
+[hosts.`+hostname+`.pacman]
+packages = ["brightnessctl"]
+`)
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if !sameSet(cfg.Pacman.Packages, []string{"base", "brightnessctl"}) {
+		t.Errorf("packages = %v, want host overlay merged", cfg.Pacman.Packages)
+	}
+}
+
+func TestLoad_HostOverlayIgnoredOnOtherHosts(t *testing.T) {
+	path := writeTOML(t, `
+[pacman]
+packages = ["base"]
+
+[hosts.never-this-hostname-xyz.pacman]
+packages = ["should-not-appear"]
+`)
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	for _, p := range cfg.Pacman.Packages {
+		if p == "should-not-appear" {
+			t.Fatalf("host overlay leaked into non-matching host: %v", cfg.Pacman.Packages)
+		}
+	}
+}
+
+// ---------- groups ----------
+
+func TestLoad_GroupsExpandIntoPackages(t *testing.T) {
+	path := writeTOML(t, `
+[groups]
+dev_cli = ["git", "neovim"]
+desktop = ["firefox"]
+
+[pacman]
+groups   = ["dev_cli", "desktop"]
+packages = ["base"]
+`)
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	want := []string{"base", "git", "neovim", "firefox"}
+	if !sameSet(cfg.Pacman.Packages, want) {
+		t.Errorf("packages = %v, want union with groups", cfg.Pacman.Packages)
+	}
+	if len(cfg.Pacman.Groups) != 0 {
+		t.Errorf("Groups should be cleared after expansion: %v", cfg.Pacman.Groups)
+	}
+}
+
+func TestLoad_UndefinedGroupErrors(t *testing.T) {
+	path := writeTOML(t, `
+[pacman]
+groups = ["never_defined"]
+`)
+	_, err := Load(path)
+	if err == nil || !strings.Contains(err.Error(), "undefined group") {
+		t.Fatalf("expected undefined-group error, got %v", err)
+	}
+}
+
+// ---------- helpers ----------
+
+func sameSet(got, want []string) bool {
+	if len(got) != len(want) {
+		return false
+	}
+	g := map[string]bool{}
+	for _, x := range got {
+		g[x] = true
+	}
+	for _, x := range want {
+		if !g[x] {
+			return false
+		}
+	}
+	return true
+}

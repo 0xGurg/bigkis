@@ -17,24 +17,68 @@ aur_helper = "yay"
 # Default node global package manager. One of: "npm", "pnpm", "yarn".
 node_manager = "pnpm"
 
+# Native Arch repository packages.
+#
+# This is your explicit pacman baseline: the native packages you want bigkis to
+# keep installed on this machine. Include system essentials, kernel, firmware,
+# networking, build tools, shell/editor/tools, and desktop packages/apps if
+# they come from the official repos.
+#
+# To bootstrap from an existing Arch install:
+#
+#   pacman -Qqen > pacman-packages.txt
+#
+# Then curate the generated list into this section. Do not blindly copy every
+# package forever; remove experiments and keep only the baseline you want to
+# reproduce.
 [pacman]
 packages = [
+  # Boot / base system
   "base",
   "linux",
   "linux-firmware",
+
+  # Network / access
   "networkmanager",
-  "git",
-  "neovim",
+  "openssh",
   "ufw",
+
+  # Package and build tools
+  "git",
+  "base-devel",
+  "go",
+
+  # Shell / editor / CLI tools
+  "neovim",
   "fish",
+  "ripgrep",
+  "fd",
+  "fzf",
+
+  # Desktop and native apps can live here too if they come from pacman.
+  # Examples:
+  # "gnome",
+  # "plasma",
+  # "sway",
+  # "firefox",
+  # "alacritty",
 ]
 
-# bigkis will never install or remove these. Useful when you have manually
-# replaced a default package (e.g. opendoas instead of sudo).
+# bigkis will never install or remove ignored packages. Useful for manually
+# managed replacements (e.g. opendoas), vendor packages, temporary experiments,
+# or anything you want visible in config but not controlled yet.
 ignored = []
 
 [aur]
+# Foreign packages from the AUR. To inspect your current foreign explicit
+# packages on an existing Arch install:
+#
+#   pacman -Qqem > aur-packages.txt
+#
+# Then curate the result into this list.
 packages = [
+  # After bootstrap, let bigkis manage itself declaratively through AUR.
+  "bigkis-bin",
   "fnm-bin",
   "visual-studio-code-bin",
 ]
