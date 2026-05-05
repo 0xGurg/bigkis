@@ -36,14 +36,15 @@ type Script struct {
 	Path string
 }
 
-// Dir returns the directory where rollback scripts live: the system path when
-// running as root, otherwise a per-user fallback.
+// Dir returns the directory where rollback scripts live. An explicit
+// XDG_STATE_HOME wins (so callers running with sudo -E and tests can isolate),
+// then the system path when running as root, then a per-user fallback.
 func Dir() string {
-	if os.Geteuid() == 0 {
-		return "/var/lib/bigkis/rollbacks"
-	}
 	if xdg := os.Getenv("XDG_STATE_HOME"); xdg != "" {
 		return filepath.Join(xdg, "bigkis", "rollbacks")
+	}
+	if os.Geteuid() == 0 {
+		return "/var/lib/bigkis/rollbacks"
 	}
 	if home, err := os.UserHomeDir(); err == nil {
 		return filepath.Join(home, ".local", "state", "bigkis", "rollbacks")
