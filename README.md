@@ -26,7 +26,7 @@ curl -fsSL https://codeberg.org/gurg/bigkis/raw/branch/main/install.sh | sh
 To pin a version or change install location:
 
 ```sh
-BIGKIS_VERSION=v0.2.0 sh install.sh
+BIGKIS_VERSION=v0.2.1 sh install.sh
 BIGKIS_INSTALL_DIR="$HOME/.local/bin" sh install.sh
 ```
 
