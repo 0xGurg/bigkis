@@ -1,0 +1,19 @@
+# Build artifacts
+/bigkis
+/bigkis-*
+/dist/
+
+# Go
+*.test
+*.out
+coverage.*
+
+# Editors
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
