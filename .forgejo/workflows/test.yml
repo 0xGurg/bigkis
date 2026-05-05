@@ -1,0 +1,21 @@
+name: test
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: docker
+    container:
+      image: golang:1.26
+    steps:
+      - name: checkout
+        uses: actions/checkout@v4
+
+      - name: vet
+        run: go vet ./...
+
+      - name: test
+        run: go test ./...

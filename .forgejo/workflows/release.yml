@@ -1,0 +1,64 @@
+name: release
+
+# Triggers when a tag like v0.1.0 is pushed. Builds static linux/amd64 and
+# linux/arm64 binaries, generates checksums.txt, and publishes them as
+# Codeberg release assets. install.sh is what consumes this layout.
+#
+# Required secret: GITHUB_TOKEN is auto-provided by Forgejo Actions and has
+# enough scope on the current repo to create releases. If your instance
+# does not auto-provide it, create a personal access token with
+# `write:repository` and add it as a secret named GITHUB_TOKEN (or change
+# the `token:` value below to point at a different secret name).
+
+on:
+  push:
+    tags:
+      - "v*"
+
+jobs:
+  release:
+    runs-on: docker
+    container:
+      image: golang:1.26
+    steps:
+      - name: checkout
+        uses: actions/checkout@v4
+
+      - name: prepare dist directory
+        run: mkdir -p dist
+
+      - name: build linux/amd64
+        env:
+          CGO_ENABLED: "0"
+          GOOS: linux
+          GOARCH: amd64
+        run: |
+          go build -trimpath \
+            -ldflags "-s -w -X main.version=${GITHUB_REF_NAME}" \
+            -o dist/bigkis-linux-amd64 ./cmd/bigkis
+
+      - name: build linux/arm64
+        env:
+          CGO_ENABLED: "0"
+          GOOS: linux
+          GOARCH: arm64
+        run: |
+          go build -trimpath \
+            -ldflags "-s -w -X main.version=${GITHUB_REF_NAME}" \
+            -o dist/bigkis-linux-arm64 ./cmd/bigkis
+
+      - name: checksums
+        working-directory: dist
+        run: sha256sum bigkis-linux-amd64 bigkis-linux-arm64 > checksums.txt
+
+      - name: publish release
+        uses: https://code.forgejo.org/actions/forgejo-release@v2
+        with:
+          url: https://codeberg.org
+          repo: ${{ github.repository }}
+          direction: upload
+          release-dir: dist
+          tag: ${{ github.ref_name }}
+          title: ${{ github.ref_name }}
+          token: ${{ secrets.GITHUB_TOKEN }}
+          override: true
