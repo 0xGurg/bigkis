@@ -3,6 +3,7 @@ package flatpak
 
 import (
 	"fmt"
+	"regexp"
 	"sort"
 	"strings"
 
@@ -14,9 +15,21 @@ import (
 	"codeberg.org/gurg/bigkis/internal/ui"
 )
 
+// safeUsername restricts the values bigkis will pass through to `sudo -u`.
+// Real Linux usernames are a much wider character set in theory, but bigkis
+// users name themselves with letters/digits/dashes/underscores in practice;
+// rejecting anything else avoids passing surprising input through to sudo.
+var safeUsername = regexp.MustCompile(`^[a-zA-Z_][a-zA-Z0-9_-]*$`)
+
 type Flatpak struct {
 	cached *cachedPlan
+	// runner is consulted by Plan for probes; if nil, Plan creates a fresh
+	// runner.New(false). Tests use SetRunner to inject a Fake.
+	runner *runner.Runner
 }
+
+// SetRunner injects a runner used by Plan for probes. Intended for tests.
+func (f *Flatpak) SetRunner(r *runner.Runner) { f.runner = r }
 
 type cachedPlan struct {
 	system plan.Diff
@@ -33,7 +46,7 @@ func New() *Flatpak { return &Flatpak{} }
 
 func (f *Flatpak) Name() string { return config.PluginFlatpak }
 
-func (f *Flatpak) Available() error {
+func (f *Flatpak) Available(cfg *config.Config) error {
 	if !runner.HasCommand("flatpak") {
 		return fmt.Errorf("flatpak not found on PATH")
 	}
@@ -50,9 +63,12 @@ func (f *Flatpak) probeSystem(r *runner.Runner) ([]string, error) {
 
 func (f *Flatpak) probeUser(r *runner.Runner, username string) ([]string, error) {
 	// We can't easily probe another user's flatpak installs without sudo to
-	// that user. Instead, we rely on `sudo -u <user> flatpak list --user`.
-	cmd := fmt.Sprintf("sudo -u %s flatpak list --app --user --columns=application", username)
-	out, err := r.Capture("sh", "-c", cmd)
+	// that user. Use argv form (no shell) and validate the username so a
+	// surprising value cannot get expanded by sudo or sh.
+	if !safeUsername.MatchString(username) {
+		return nil, fmt.Errorf("flatpak.user_packages: refusing to probe user %q (must match %s)", username, safeUsername)
+	}
+	out, err := r.Capture("sudo", "-u", username, "flatpak", "list", "--app", "--user", "--columns=application")
 	if err != nil {
 		return nil, err
 	}
@@ -60,7 +76,10 @@ func (f *Flatpak) probeUser(r *runner.Runner, username string) ([]string, error)
 }
 
 func (f *Flatpak) Plan(cfg *config.Config, st *state.State) (plugin.Report, error) {
-	r := runner.New(false)
+	r := f.runner
+	if r == nil {
+		r = runner.New(false)
+	}
 
 	systemActual, err := f.probeSystem(r)
 	if err != nil {
@@ -126,17 +145,23 @@ func (f *Flatpak) Plan(cfg *config.Config, st *state.State) (plugin.Report, erro
 	return rep, nil
 }
 
-func (f *Flatpak) Apply(cfg *config.Config, st *state.State, r *runner.Runner, u *ui.UI) error {
+func (f *Flatpak) Apply(cfg *config.Config, st *state.State, report plugin.Report, r *runner.Runner, u *ui.UI) error {
 	if f.cached == nil {
-		if _, err := f.Plan(cfg, st); err != nil {
-			return err
-		}
+		return fmt.Errorf("flatpak: Apply called before Plan")
+	}
+	if err := assertReportMatchesCached(report, f.cached); err != nil {
+		return fmt.Errorf("flatpak: %w", err)
+	}
+
+	remote := cfg.Flatpak.Remote
+	if remote == "" {
+		remote = "flathub"
 	}
 
 	if f.cached.system.HasChanges() {
 		if len(f.cached.system.Add) > 0 {
-			u.Step("flatpak: installing %d system app(s)", len(f.cached.system.Add))
-			args := append([]string{"install", "--system", "--noninteractive", "--assumeyes", "flathub"}, f.cached.system.Add...)
+			u.Step("flatpak: installing %d system app(s) from %s", len(f.cached.system.Add), remote)
+			args := append([]string{"install", "--system", "--noninteractive", "--assumeyes", remote}, f.cached.system.Add...)
 			if _, err := r.Run(runner.Spec{Name: "flatpak", Args: args, Sudo: true}); err != nil {
 				return fmt.Errorf("flatpak install system: %w", err)
 			}
@@ -156,13 +181,16 @@ func (f *Flatpak) Apply(cfg *config.Config, st *state.State, r *runner.Runner, u
 	}
 	sort.Strings(users)
 	for _, username := range users {
+		if !safeUsername.MatchString(username) {
+			return fmt.Errorf("flatpak.user_packages: refusing to install for user %q (must match %s)", username, safeUsername)
+		}
 		d := f.cached.users[username]
 		if !d.HasChanges() {
 			continue
 		}
 		if len(d.Add) > 0 {
-			u.Step("flatpak: installing %d app(s) for user %s", len(d.Add), username)
-			args := append([]string{"install", "--user", "--noninteractive", "--assumeyes", "flathub"}, d.Add...)
+			u.Step("flatpak: installing %d app(s) for user %s from %s", len(d.Add), username, remote)
+			args := append([]string{"install", "--user", "--noninteractive", "--assumeyes", remote}, d.Add...)
 			if _, err := r.Run(runner.Spec{Name: "flatpak", Args: args, User: username}); err != nil {
 				return fmt.Errorf("flatpak install user %s: %w", username, err)
 			}
@@ -178,6 +206,47 @@ func (f *Flatpak) Apply(cfg *config.Config, st *state.State, r *runner.Runner, u
 
 	if !f.cached.system.HasChanges() && !anyUserChanges(f.cached.users) {
 		u.Step("flatpak: nothing to do")
+	}
+	return nil
+}
+
+// assertReportMatchesCached verifies the operations in report match the
+// cached system+user diffs computed in Plan. We refuse to apply mismatched
+// reports rather than silently re-deriving from the live system.
+func assertReportMatchesCached(report plugin.Report, cached *cachedPlan) error {
+	type key struct {
+		kind   plugin.OpKind
+		target string
+		detail string
+	}
+	declared := map[key]bool{}
+	for _, op := range report.Operations {
+		declared[key{op.Kind, op.Target, op.Detail}] = true
+	}
+	expected := map[key]bool{}
+	for _, name := range cached.system.Add {
+		expected[key{plugin.OpAdd, name, "system"}] = true
+	}
+	for _, name := range cached.system.Remove {
+		expected[key{plugin.OpRemove, name, "system"}] = true
+	}
+	for username, d := range cached.users {
+		for _, name := range d.Add {
+			expected[key{plugin.OpAdd, name, "user " + username}] = true
+		}
+		for _, name := range d.Remove {
+			expected[key{plugin.OpRemove, name, "user " + username}] = true
+		}
+	}
+	for k := range declared {
+		if !expected[k] {
+			return fmt.Errorf("report op %+v not in cached plan; rerun Plan", k)
+		}
+	}
+	for k := range expected {
+		if !declared[k] {
+			return fmt.Errorf("cached plan op %+v not in report; rerun Plan", k)
+		}
 	}
 	return nil
 }

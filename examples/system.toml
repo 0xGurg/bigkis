@@ -17,6 +17,12 @@ aur_helper = "yay"
 # Default node global package manager. One of: "npm", "pnpm", "yarn".
 node_manager = "pnpm"
 
+# How pacman prunes orphans after a removal:
+#   "scoped" (default) - prune only orphans introduced by this apply
+#   "all"              - prune every orphan on the system after demotion
+#   "none"             - never prune; let removed packages linger as deps
+prune_orphans = "scoped"
+
 # Native Arch repository packages.
 #
 # This is your explicit pacman baseline: the native packages you want bigkis to
@@ -87,7 +93,10 @@ packages = [
 ignored = ["yay"]
 
 [flatpak]
-# System-wide flatpaks (installed with --system from flathub).
+# Flatpak remote to install from. Defaults to "flathub" when omitted.
+remote = "flathub"
+
+# System-wide flatpaks (installed with --system from the remote above).
 packages = [
   "org.mozilla.firefox",
   "org.signal.Signal",

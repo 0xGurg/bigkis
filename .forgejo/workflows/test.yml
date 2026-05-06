@@ -16,9 +16,35 @@ jobs:
         uses: https://code.forgejo.org/actions/setup-go@v5
         with:
           go-version: "1.26"
+          cache: true
 
       - name: vet
         run: go vet ./...
 
+      - name: gofmt
+        run: |
+          if [ -n "$(gofmt -l .)" ]; then
+            echo "files need gofmt:"
+            gofmt -l .
+            exit 1
+          fi
+
       - name: test
-        run: go test ./...
+        run: go test -race ./...
+
+  staticcheck:
+    runs-on: codeberg-tiny
+    steps:
+      - name: checkout
+        uses: https://code.forgejo.org/actions/checkout@v4
+
+      - name: setup go
+        uses: https://code.forgejo.org/actions/setup-go@v5
+        with:
+          go-version: "1.26"
+          cache: true
+
+      - name: staticcheck
+        run: |
+          go install honnef.co/go/tools/cmd/staticcheck@latest
+          "$(go env GOPATH)/bin/staticcheck" ./...

@@ -17,15 +17,32 @@ import (
 type AUR struct {
 	helper     string
 	cachedDiff *plan.Diff
+	// runner is consulted by Plan for probes; if nil, Plan creates a fresh
+	// runner.New(false). Tests use SetRunner to inject a Fake.
+	runner *runner.Runner
 }
 
 func New() *AUR { return &AUR{} }
 
+// SetRunner injects a runner used by Plan for probes. Intended for tests.
+func (a *AUR) SetRunner(r *runner.Runner) { a.runner = r }
+
 func (a *AUR) Name() string { return config.PluginAUR }
 
-func (a *AUR) Available() error {
+// Available checks that the tools needed for the AUR plugin to function are
+// on PATH. We need both pacman (to query foreign packages) and the user's
+// configured AUR helper. The helper is checked here instead of inside Apply
+// so status / dry-run surface a missing helper before the user is prompted.
+func (a *AUR) Available(cfg *config.Config) error {
 	if !runner.HasCommand("pacman") {
 		return fmt.Errorf("pacman not found on PATH (required to query foreign packages)")
+	}
+	helper := cfg.Settings.AURHelper
+	if helper == "" {
+		return fmt.Errorf("settings.aur_helper is not set")
+	}
+	if !runner.HasCommand(helper) {
+		return fmt.Errorf("aur helper %q not found on PATH; install it or change settings.aur_helper", helper)
 	}
 	return nil
 }
@@ -37,7 +54,7 @@ func (a *AUR) Probe(r *runner.Runner) ([]string, error) {
 	out, err := r.Capture("pacman", "-Qqm")
 	if err != nil {
 		// pacman -Qqm exits 1 when there are no foreign packages; that's fine.
-		if strings.Contains(err.Error(), "exit status 1") {
+		if runner.IsExitCode(err, 1) {
 			return nil, nil
 		}
 		return nil, err
@@ -47,7 +64,10 @@ func (a *AUR) Probe(r *runner.Runner) ([]string, error) {
 
 func (a *AUR) Plan(cfg *config.Config, st *state.State) (plugin.Report, error) {
 	a.helper = cfg.Settings.AURHelper
-	r := runner.New(false)
+	r := a.runner
+	if r == nil {
+		r = runner.New(false)
+	}
 	actual, err := a.Probe(r)
 	if err != nil {
 		return plugin.Report{}, fmt.Errorf("probe aur: %w", err)
@@ -73,13 +93,14 @@ func (a *AUR) Plan(cfg *config.Config, st *state.State) (plugin.Report, error) {
 	return rep, nil
 }
 
-func (a *AUR) Apply(cfg *config.Config, st *state.State, r *runner.Runner, u *ui.UI) error {
+func (a *AUR) Apply(cfg *config.Config, st *state.State, report plugin.Report, r *runner.Runner, u *ui.UI) error {
 	if a.cachedDiff == nil {
-		if _, err := a.Plan(cfg, st); err != nil {
-			return err
-		}
+		return fmt.Errorf("aur: Apply called before Plan")
 	}
 	d := *a.cachedDiff
+	if err := assertReportMatchesDiff(report, d); err != nil {
+		return fmt.Errorf("aur: %w", err)
+	}
 	if !d.HasChanges() {
 		u.Step("aur: nothing to do")
 		return nil
@@ -87,9 +108,6 @@ func (a *AUR) Apply(cfg *config.Config, st *state.State, r *runner.Runner, u *ui
 
 	if a.helper == "" {
 		a.helper = cfg.Settings.AURHelper
-	}
-	if !runner.HasCommand(a.helper) {
-		return fmt.Errorf("aur helper %q not found on PATH; install it or change settings.aur_helper", a.helper)
 	}
 
 	// AUR helpers must be invoked as a non-root user. We rely on the user
@@ -110,6 +128,42 @@ func (a *AUR) Apply(cfg *config.Config, st *state.State, r *runner.Runner, u *ui
 		}
 	}
 	return nil
+}
+
+// assertReportMatchesDiff verifies the Report passed to Apply matches the
+// Diff captured during Plan, so we never apply a different set of changes
+// than what the user confirmed.
+func assertReportMatchesDiff(report plugin.Report, d plan.Diff) error {
+	declared := map[string]bool{}
+	for _, op := range report.Operations {
+		declared[opKey(op.Kind, op.Target)] = true
+	}
+	cached := map[string]bool{}
+	for _, name := range d.Add {
+		cached[opKey(plugin.OpAdd, name)] = true
+	}
+	for _, name := range d.Remove {
+		cached[opKey(plugin.OpRemove, name)] = true
+	}
+	for k := range declared {
+		if !cached[k] {
+			return fmt.Errorf("report op %q not in cached plan; rerun Plan", k)
+		}
+	}
+	for k := range cached {
+		if !declared[k] {
+			return fmt.Errorf("cached plan op %q not in report; rerun Plan", k)
+		}
+	}
+	return nil
+}
+
+func opKey(kind plugin.OpKind, target string) string {
+	prefix := "+"
+	if kind == plugin.OpRemove {
+		prefix = "-"
+	}
+	return prefix + target
 }
 
 func (a *AUR) PersistState(cfg *config.Config, st *state.State) error {

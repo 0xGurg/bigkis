@@ -46,7 +46,9 @@ func Load(path string) (*State, error) {
 	return &s, nil
 }
 
-// Save writes the state atomically (write tmp + rename).
+// Save writes the state atomically and durably (write tmp, fsync the file,
+// rename, fsync the parent dir). On crash or power loss, the file at path is
+// either the previous state or the new state, never a partial write.
 func Save(path string, s *State) error {
 	if s == nil {
 		s = empty()
@@ -57,21 +59,65 @@ func Save(path string, s *State) error {
 	if s.LastApplied == nil {
 		s.LastApplied = map[string]json.RawMessage{}
 	}
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+	dir := filepath.Dir(path)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return fmt.Errorf("mkdir state dir: %w", err)
 	}
 	data, err := json.MarshalIndent(s, "", "  ")
 	if err != nil {
 		return fmt.Errorf("marshal state: %w", err)
 	}
-	tmp := path + ".tmp"
-	if err := os.WriteFile(tmp, data, 0o644); err != nil {
-		return fmt.Errorf("write state tmp: %w", err)
+	return atomicWrite(path, data, 0o644)
+}
+
+// atomicWrite writes data to path atomically and durably. It writes to a
+// sibling .tmp, fsyncs the file, renames over path, then fsyncs the parent
+// directory so the rename itself is durable.
+func atomicWrite(path string, data []byte, mode os.FileMode) error {
+	dir := filepath.Dir(path)
+	tmp, err := os.CreateTemp(dir, filepath.Base(path)+".tmp-*")
+	if err != nil {
+		return fmt.Errorf("create tmp: %w", err)
 	}
-	if err := os.Rename(tmp, path); err != nil {
-		return fmt.Errorf("rename state: %w", err)
+	tmpName := tmp.Name()
+	cleanup := func() { _ = os.Remove(tmpName) }
+	if _, err := tmp.Write(data); err != nil {
+		_ = tmp.Close()
+		cleanup()
+		return fmt.Errorf("write tmp: %w", err)
+	}
+	if err := tmp.Chmod(mode); err != nil {
+		_ = tmp.Close()
+		cleanup()
+		return fmt.Errorf("chmod tmp: %w", err)
+	}
+	if err := tmp.Sync(); err != nil {
+		_ = tmp.Close()
+		cleanup()
+		return fmt.Errorf("fsync tmp: %w", err)
+	}
+	if err := tmp.Close(); err != nil {
+		cleanup()
+		return fmt.Errorf("close tmp: %w", err)
+	}
+	if err := os.Rename(tmpName, path); err != nil {
+		cleanup()
+		return fmt.Errorf("rename: %w", err)
+	}
+	// Best-effort fsync of the parent dir so the rename survives a crash.
+	// Some filesystems / platforms don't permit opening dirs for sync; ignore.
+	if d, err := os.Open(dir); err == nil {
+		_ = d.Sync()
+		_ = d.Close()
 	}
 	return nil
+}
+
+// AtomicWrite writes data to path atomically and durably (tmp + fsync +
+// rename + dir fsync). Exposed so other packages (lockfile, rollback) can
+// share the same durability semantics.
+func AtomicWrite(path string, data []byte, mode os.FileMode) error {
+	return atomicWrite(path, data, mode)
 }
 
 // Get unmarshals plugin-specific state into v. Returns false if the plugin has

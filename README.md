@@ -26,7 +26,7 @@ curl -fsSL https://codeberg.org/gurg/bigkis/raw/branch/main/install.sh | sh
 To pin a version or change install location:
 
 ```sh
-BIGKIS_VERSION=v0.2.1 sh install.sh
+BIGKIS_VERSION=v0.3.0 sh install.sh
 BIGKIS_INSTALL_DIR="$HOME/.local/bin" sh install.sh
 ```
 
@@ -40,9 +40,16 @@ then:
 
 ```sh
 bigkis status                    # show drift, no changes
+bigkis status --exit-on-drift    # exit 3 when drift detected (CI-friendly)
 bigkis apply --dry-run           # show what would change
+bigkis apply --json              # emit machine-readable plan, do not apply
 sudo bigkis apply                # apply system plugins and write state
+sudo bigkis apply --yes --quiet  # skip the prompt, suppress info logs
 ```
+
+`bigkis` returns distinct exit codes (`0` ok, `1` error, `2` user-cancelled,
+`3` drift) so wrappers can branch precisely. See
+[Exit Codes](https://codeberg.org/gurg/bigkis/wiki/Exit-Codes).
 
 ## Documentation
 
@@ -58,8 +65,17 @@ Full docs live on the
   and the `ignored` list.
 - [Removals and State](https://codeberg.org/gurg/bigkis/wiki/Removals-and-State) -
   how `apply` removes packages per plugin and where state is stored.
+- [Rollback](https://codeberg.org/gurg/bigkis/wiki/Rollback) - rollback
+  scripts written before each apply, and how to run them.
+- [Explain](https://codeberg.org/gurg/bigkis/wiki/Explain) and
+  [Import](https://codeberg.org/gurg/bigkis/wiki/Import) - per-package
+  debugging and bootstrapping a config from an existing system.
+- [Completion](https://codeberg.org/gurg/bigkis/wiki/Completion) - bash /
+  zsh / fish completion.
+- [Exit Codes](https://codeberg.org/gurg/bigkis/wiki/Exit-Codes) - the
+  contract for `0` / `1` / `2` / `3` exits.
 - [Release Assets](https://codeberg.org/gurg/bigkis/wiki/Release-Assets) -
-  asset naming and `checksums.txt` format.
+  asset naming, `checksums.txt`, and optional minisign signature.
 
 ## License
 

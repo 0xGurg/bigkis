@@ -3,9 +3,12 @@ package node
 import (
 	"reflect"
 	"sort"
+	"strings"
 	"testing"
 
 	"codeberg.org/gurg/bigkis/internal/config"
+	"codeberg.org/gurg/bigkis/internal/runner"
+	"codeberg.org/gurg/bigkis/internal/state"
 )
 
 func TestGroupDeclared_DefaultManager(t *testing.T) {
@@ -142,4 +145,133 @@ func sorted(in []string) []string {
 	out := append([]string(nil), in...)
 	sort.Strings(out)
 	return out
+}
+
+// stubLookPath replaces runner.LookPath so HasCommand returns true (or per-name)
+// without consulting the real PATH.
+func stubLookPath(t *testing.T, available map[string]bool) {
+	t.Helper()
+	prev := runner.LookPath
+	runner.LookPath = func(name string) (string, error) {
+		if available == nil || available[name] {
+			return "/usr/bin/" + name, nil
+		}
+		return "", &lookErr{name}
+	}
+	t.Cleanup(func() { runner.LookPath = prev })
+}
+
+type lookErr struct{ name string }
+
+func (e *lookErr) Error() string { return "not found: " + e.name }
+
+func TestProbeNPMLike_ParsesNpmObject(t *testing.T) {
+	f := runner.NewFake()
+	f.Respond = func(name string, args []string) (string, string, int, error) {
+		return `{"dependencies":{"typescript":{},"eslint":{}}}`, "", 0, nil
+	}
+	got, err := probeNPMLike(f.Runner, "npm")
+	if err != nil {
+		t.Fatalf("probeNPMLike: %v", err)
+	}
+	sort.Strings(got)
+	if !reflect.DeepEqual(got, []string{"eslint", "typescript"}) {
+		t.Errorf("got %v", got)
+	}
+}
+
+func TestProbeNPMLike_ParsesPnpmArray(t *testing.T) {
+	f := runner.NewFake()
+	f.Respond = func(name string, args []string) (string, string, int, error) {
+		return `[{"dependencies":{"typescript":{}}},{"dependencies":{"eslint":{}}}]`, "", 0, nil
+	}
+	got, err := probeNPMLike(f.Runner, "pnpm")
+	if err != nil {
+		t.Fatalf("probeNPMLike: %v", err)
+	}
+	sort.Strings(got)
+	if !reflect.DeepEqual(got, []string{"eslint", "typescript"}) {
+		t.Errorf("got %v", got)
+	}
+}
+
+func TestProbeNPMLike_AcceptsValidJSONOnNonZeroExit(t *testing.T) {
+	// npm exits non-zero when peer-dep complaints exist but still emits
+	// valid JSON on stdout. probeNPMLike should parse it.
+	f := runner.NewFake()
+	f.Respond = func(name string, args []string) (string, string, int, error) {
+		return `{"dependencies":{"typescript":{}}}`, "peer dep warning", 1,
+			runner.NewExitError(1, "exit status 1")
+	}
+	got, err := probeNPMLike(f.Runner, "npm")
+	if err != nil {
+		t.Fatalf("expected JSON parse to succeed despite non-zero exit, got %v", err)
+	}
+	if !reflect.DeepEqual(got, []string{"typescript"}) {
+		t.Errorf("got %v", got)
+	}
+}
+
+func TestProbeNPMLike_SurfacesErrorWhenStdoutEmpty(t *testing.T) {
+	f := runner.NewFake()
+	f.Respond = func(name string, args []string) (string, string, int, error) {
+		return "", "boom", 2, runner.NewExitError(2, "exit status 2")
+	}
+	if _, err := probeNPMLike(f.Runner, "npm"); err == nil {
+		t.Error("expected error when stdout empty and exit non-zero")
+	}
+}
+
+func TestProbeNPMLike_SurfacesParseErrorIncludingStderr(t *testing.T) {
+	f := runner.NewFake()
+	f.Respond = func(name string, args []string) (string, string, int, error) {
+		return "not JSON at all", "stderr message", 1,
+			runner.NewExitError(1, "exit status 1")
+	}
+	_, err := probeNPMLike(f.Runner, "npm")
+	if err == nil {
+		t.Fatal("expected parse error")
+	}
+	if !strings.Contains(err.Error(), "stderr message") && !strings.Contains(err.Error(), "exit status") {
+		t.Errorf("error should mention stderr or exit status; got %v", err)
+	}
+}
+
+func TestProbeYarn_ParsesInfoLines(t *testing.T) {
+	f := runner.NewFake()
+	f.Respond = func(name string, args []string) (string, string, int, error) {
+		return `info "typescript@5.4.0" has binaries:` + "\n" +
+			`info "eslint@9.0.0" has binaries:` + "\n" +
+			`some other line` + "\n", "", 0, nil
+	}
+	got, err := probeYarn(f.Runner)
+	if err != nil {
+		t.Fatalf("probeYarn: %v", err)
+	}
+	sort.Strings(got)
+	if !reflect.DeepEqual(got, []string{"eslint", "typescript"}) {
+		t.Errorf("got %v", got)
+	}
+}
+
+func TestPlan_BuildsReportWithViaManager(t *testing.T) {
+	stubLookPath(t, map[string]bool{"npm": true})
+	f := runner.NewFake()
+	f.Respond = func(name string, args []string) (string, string, int, error) {
+		// Empty global set -> all declared become adds.
+		return `{"dependencies":{}}`, "", 0, nil
+	}
+	n := New()
+	n.SetRunner(f.Runner)
+	cfg := &config.Config{
+		Settings: config.Settings{NodeManager: "npm"},
+		Node:     config.Node{Packages: []string{"typescript"}},
+	}
+	report, err := n.Plan(cfg, &state.State{})
+	if err != nil {
+		t.Fatalf("Plan: %v", err)
+	}
+	if len(report.Operations) != 1 || report.Operations[0].Detail != "via npm" {
+		t.Errorf("ops = %+v, want 1 op with detail 'via npm'", report.Operations)
+	}
 }

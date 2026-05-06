@@ -16,17 +16,25 @@ type Plugin interface {
 
 	// Available returns nil if the plugin can run on this system (e.g. its
 	// underlying tools are installed). A non-nil error is treated as "skip
-	// with warning".
-	Available() error
+	// with warning". This is also where plugins should fail fast on missing
+	// helpers (like an AUR helper) so status/dry-run report the problem
+	// before the user is asked to confirm. The plugin receives cfg so
+	// tool-name overrides (e.g. settings.aur_helper) can be respected.
+	Available(cfg *config.Config) error
 
 	// Plan reads the declaration and the current system, computes the work to
 	// do, and returns a human-readable Report. It must not change the system.
+	// Plugins are expected to cache whatever they need to run a corresponding
+	// Apply; the caller will pass the same Report to Apply so the executed
+	// work matches what the user confirmed.
 	Plan(cfg *config.Config, st *state.State) (Report, error)
 
-	// Apply performs the work described by the most recent Plan. Plugins may
-	// re-derive the plan internally; bigkis re-calls Plan first so any drift
-	// between the two calls is the user's problem.
-	Apply(cfg *config.Config, st *state.State, r *runner.Runner, u *ui.UI) error
+	// Apply executes exactly the operations described by report. report must
+	// be the value returned by the most recent Plan call on this plugin.
+	// Plugins must not consult the live system inside Apply; if their cached
+	// plan is missing or no longer matches report, Apply returns an error
+	// rather than silently re-deriving work.
+	Apply(cfg *config.Config, st *state.State, report Report, r *runner.Runner, u *ui.UI) error
 
 	// PersistState writes the now-current declared set into st under Name().
 	// Called only after a successful Apply.

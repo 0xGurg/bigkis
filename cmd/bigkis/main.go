@@ -28,6 +28,15 @@ import (
 // version is set at build time via -ldflags "-X main.version=...".
 var version = "dev"
 
+// Exit codes. Zero means success. Non-zero codes are stable so wrappers
+// can branch on them; see wiki/Exit-Codes.md for the user-facing contract.
+const (
+	ExitOK            = 0
+	ExitError         = 1
+	ExitUserCancelled = 2
+	ExitDrift         = 3
+)
+
 func main() {
 	app := &cli.App{
 		Name:                 "bigkis",
@@ -54,8 +63,16 @@ func main() {
 	}
 
 	if err := app.Run(os.Args); err != nil {
+		// cli.Exit / cli.ExitCoder values carry an exit code we want to use
+		// as-is (e.g. ExitUserCancelled). Anything else is a real error.
+		if ec, ok := err.(cli.ExitCoder); ok {
+			if msg := err.Error(); msg != "" {
+				fmt.Fprintln(os.Stderr, msg)
+			}
+			os.Exit(ec.ExitCode())
+		}
 		fmt.Fprintln(os.Stderr, "error:", err)
-		os.Exit(1)
+		os.Exit(ExitError)
 	}
 }
 
@@ -66,6 +83,8 @@ func applyCommand() *cli.Command {
 		Flags: []cli.Flag{
 			&cli.BoolFlag{Name: "dry-run", Aliases: []string{"n"}, Usage: "show what would change without making changes"},
 			&cli.BoolFlag{Name: "yes", Aliases: []string{"y"}, Usage: "skip the confirmation prompt"},
+			&cli.BoolFlag{Name: "quiet", Aliases: []string{"q"}, Usage: "suppress informational output (errors/warnings still printed)"},
+			&cli.BoolFlag{Name: "json", Usage: "emit a JSON plan to stdout and exit (does not apply; logs go to stderr)"},
 			&cli.BoolFlag{Name: "no-rollback", Usage: "do not write a rollback script for this apply"},
 			&cli.BoolFlag{Name: "no-lock", Usage: "do not write bigkis.lock after apply"},
 			&cli.StringFlag{Name: "lock", Usage: "path to write bigkis.lock (default: next to config)"},
@@ -82,6 +101,7 @@ func statusCommand() *cli.Command {
 		Usage: "report drift between the declared config and the system, without changing anything",
 		Flags: []cli.Flag{
 			&cli.BoolFlag{Name: "json", Usage: "emit machine-readable JSON to stdout (logs go to stderr)"},
+			&cli.BoolFlag{Name: "exit-on-drift", Usage: "exit with code 3 instead of 0 when drift is detected"},
 		},
 		Action: runStatus,
 	}
@@ -247,7 +267,7 @@ func runStatus(c *cli.Context) error {
 	plugins := selectPlugins(cfg.Settings.Enabled, nil, nil, reg, u)
 	hasChanges := false
 	for _, p := range plugins {
-		if err := p.Available(); err != nil {
+		if err := p.Available(cfg); err != nil {
 			u.Warn("%s: unavailable (%v); skipping", p.Name(), err)
 			continue
 		}
@@ -265,6 +285,10 @@ func runStatus(c *cli.Context) error {
 	}
 	if !hasChanges {
 		u.Info("system matches declaration")
+		return nil
+	}
+	if c.Bool("exit-on-drift") {
+		return cli.Exit("drift detected", ExitDrift)
 	}
 	return nil
 }
@@ -300,7 +324,216 @@ func runStatusJSON(c *cli.Context) error {
 	plugins := selectPlugins(cfg.Settings.Enabled, nil, nil, reg, ui.New(os.Stderr, os.Stdin, false, true))
 	for _, p := range plugins {
 		pj := pluginJSON{Name: p.Name(), Available: true, InSync: true}
-		if err := p.Available(); err != nil {
+		if err := p.Available(cfg); err != nil {
+			pj.Available = false
+			pj.AvailableEr = err.Error()
+			out.Plugins = append(out.Plugins, pj)
+			continue
+		}
+		report, err := p.Plan(cfg, st)
+		if err != nil {
+			return fmt.Errorf("%s plan: %w", p.Name(), err)
+		}
+		pj.InSync = !report.HasChanges()
+		if !pj.InSync {
+			out.InSync = false
+		}
+		for _, op := range report.Operations {
+			kind := "add"
+			if op.Kind == plugin.OpRemove {
+				kind = "remove"
+			}
+			pj.Operations = append(pj.Operations, opJSON{Kind: kind, Target: op.Target, Detail: op.Detail})
+		}
+		out.Plugins = append(out.Plugins, pj)
+	}
+
+	enc := json.NewEncoder(os.Stdout)
+	enc.SetIndent("", "  ")
+	if err := enc.Encode(out); err != nil {
+		return err
+	}
+	if !out.InSync && c.Bool("exit-on-drift") {
+		return cli.Exit("", ExitDrift)
+	}
+	return nil
+}
+
+func runApply(c *cli.Context) error {
+	if c.Bool("json") {
+		return runApplyJSON(c)
+	}
+
+	cfg, st, reg, u, err := bootstrap(c)
+	if err != nil {
+		return err
+	}
+	dryRun := c.Bool("dry-run")
+	if c.Bool("yes") {
+		u.SetAssumeYes(true)
+	}
+	if c.Bool("quiet") {
+		u.SetQuiet(true)
+	}
+	only := splitCSV(c.StringSlice("only"))
+	skip := splitCSV(c.StringSlice("skip"))
+
+	plugins := selectPlugins(cfg.Settings.Enabled, only, skip, reg, u)
+	if len(plugins) == 0 {
+		u.Warn("no plugins selected; nothing to do")
+		return nil
+	}
+
+	stages, overallChanges, err := planAll(cfg, st, plugins, u)
+	if err != nil {
+		return err
+	}
+
+	if !overallChanges {
+		u.Info("system matches declaration; nothing to do")
+		return nil
+	}
+
+	if dryRun {
+		u.Info("dry-run: not applying")
+		return nil
+	}
+
+	if !u.Confirm("proceed with these changes?") {
+		u.Info("aborted by user")
+		return cli.Exit("aborted by user", ExitUserCancelled)
+	}
+
+	if !c.Bool("no-rollback") {
+		var ops []rollback.Op
+		for _, s := range stages {
+			ops = append(ops, rollback.OpsForReport(s.Plugin.Name(), cfg, s.Report)...)
+		}
+		if path, err := rollback.Write(ops); err != nil {
+			u.Warn("could not write rollback script: %v", err)
+		} else if path != "" {
+			u.Dim("rollback script: %s", path)
+		}
+	}
+
+	r := runner.New(false)
+	u.Info("applying")
+	statePath := state.DefaultPath()
+	if err := applyStages(stages, cfg, st, statePath, r, u); err != nil {
+		return err
+	}
+	u.Dim("state saved to %s", statePath)
+
+	if !c.Bool("no-lock") {
+		lockPath := c.String("lock")
+		if lockPath == "" {
+			lockPath = lockfile.DefaultPath(cfg.Path)
+		}
+		if err := lockfile.Write(lockPath, cfg); err != nil {
+			u.Warn("could not write lockfile: %v", err)
+		} else {
+			u.Dim("lockfile: %s", lockPath)
+		}
+	}
+
+	u.Info("done")
+	return nil
+}
+
+// stage pairs a plugin with the report it produced from Plan, so Apply can
+// execute exactly what the user confirmed.
+type stage struct {
+	Plugin plugin.Plugin
+	Report plugin.Report
+}
+
+// planAll runs Plan for each plugin and returns the stages with changes,
+// plus whether anything overall has changes. Plugins whose Available()
+// returns an error are skipped with a warning.
+func planAll(cfg *config.Config, st *state.State, plugins []plugin.Plugin, u *ui.UI) ([]stage, bool, error) {
+	var stages []stage
+	overall := false
+	u.Info("planning")
+	for _, p := range plugins {
+		if err := p.Available(cfg); err != nil {
+			u.Warn("%s: unavailable (%v); skipping", p.Name(), err)
+			continue
+		}
+		report, err := p.Plan(cfg, st)
+		if err != nil {
+			return nil, false, fmt.Errorf("%s plan: %w", p.Name(), err)
+		}
+		if !report.HasChanges() {
+			u.Step("%s: in sync", p.Name())
+			continue
+		}
+		overall = true
+		u.Step("%s: %d change(s)", p.Name(), len(report.Operations))
+		printReport(u, report)
+		stages = append(stages, stage{Plugin: p, Report: report})
+	}
+	return stages, overall, nil
+}
+
+// applyStages runs each stage's Apply + PersistState and checkpoints the
+// state file after every successful plugin. This way a failure mid-loop
+// leaves state.json describing what was actually applied, not a stale
+// snapshot from before the run started.
+func applyStages(stages []stage, cfg *config.Config, st *state.State, statePath string, r *runner.Runner, u *ui.UI) error {
+	for _, s := range stages {
+		u.Info("plugin: %s", s.Plugin.Name())
+		if err := s.Plugin.Apply(cfg, st, s.Report, r, u); err != nil {
+			return fmt.Errorf("%s apply: %w", s.Plugin.Name(), err)
+		}
+		if err := s.Plugin.PersistState(cfg, st); err != nil {
+			return fmt.Errorf("%s persist state: %w", s.Plugin.Name(), err)
+		}
+		if statePath != "" {
+			if err := state.Save(statePath, st); err != nil {
+				return fmt.Errorf("checkpoint state after %s: %w", s.Plugin.Name(), err)
+			}
+		}
+	}
+	return nil
+}
+
+// runApplyJSON emits a machine-readable plan to stdout. It does NOT actually
+// apply changes; the JSON mode is intended for tooling that wants the same
+// shape as `status --json` plus an explicit dryRun flag. Combine with
+// --no-rollback / --no-lock to script around bigkis.
+func runApplyJSON(c *cli.Context) error {
+	cfg, st, reg, _, err := bootstrapTo(c, os.Stderr)
+	if err != nil {
+		return err
+	}
+	logUI := ui.New(os.Stderr, os.Stdin, false, true)
+
+	type opJSON struct {
+		Kind   string `json:"kind"`
+		Target string `json:"target"`
+		Detail string `json:"detail,omitempty"`
+	}
+	type pluginJSON struct {
+		Name        string   `json:"name"`
+		Available   bool     `json:"available"`
+		AvailableEr string   `json:"availableError,omitempty"`
+		InSync      bool     `json:"inSync"`
+		Operations  []opJSON `json:"operations"`
+	}
+	type reportJSON struct {
+		ConfigPath string       `json:"configPath"`
+		DryRun     bool         `json:"dryRun"`
+		InSync     bool         `json:"inSync"`
+		Plugins    []pluginJSON `json:"plugins"`
+	}
+
+	out := reportJSON{ConfigPath: cfg.Path, DryRun: true, InSync: true}
+	only := splitCSV(c.StringSlice("only"))
+	skip := splitCSV(c.StringSlice("skip"))
+	plugins := selectPlugins(cfg.Settings.Enabled, only, skip, reg, logUI)
+	for _, p := range plugins {
+		pj := pluginJSON{Name: p.Name(), Available: true, InSync: true}
+		if err := p.Available(cfg); err != nil {
 			pj.Available = false
 			pj.AvailableEr = err.Error()
 			out.Plugins = append(out.Plugins, pj)
@@ -327,112 +560,6 @@ func runStatusJSON(c *cli.Context) error {
 	enc := json.NewEncoder(os.Stdout)
 	enc.SetIndent("", "  ")
 	return enc.Encode(out)
-}
-
-func runApply(c *cli.Context) error {
-	cfg, st, reg, u, err := bootstrap(c)
-	if err != nil {
-		return err
-	}
-	dryRun := c.Bool("dry-run")
-	if c.Bool("yes") {
-		u.SetAssumeYes(true)
-	}
-	only := splitCSV(c.StringSlice("only"))
-	skip := splitCSV(c.StringSlice("skip"))
-
-	plugins := selectPlugins(cfg.Settings.Enabled, only, skip, reg, u)
-	if len(plugins) == 0 {
-		u.Warn("no plugins selected; nothing to do")
-		return nil
-	}
-
-	type stage struct {
-		p      plugin.Plugin
-		report plugin.Report
-	}
-	stages := make([]stage, 0, len(plugins))
-	overallChanges := false
-
-	u.Info("planning")
-	for _, p := range plugins {
-		if err := p.Available(); err != nil {
-			u.Warn("%s: unavailable (%v); skipping", p.Name(), err)
-			continue
-		}
-		report, err := p.Plan(cfg, st)
-		if err != nil {
-			return fmt.Errorf("%s plan: %w", p.Name(), err)
-		}
-		if !report.HasChanges() {
-			u.Step("%s: in sync", p.Name())
-			continue
-		}
-		overallChanges = true
-		u.Step("%s: %d change(s)", p.Name(), len(report.Operations))
-		printReport(u, report)
-		stages = append(stages, stage{p: p, report: report})
-	}
-
-	if !overallChanges {
-		u.Info("system matches declaration; nothing to do")
-		return nil
-	}
-
-	if dryRun {
-		u.Info("dry-run: not applying")
-		return nil
-	}
-
-	if !u.Confirm("proceed with these changes?") {
-		u.Info("aborted by user")
-		return nil
-	}
-
-	if !c.Bool("no-rollback") {
-		var ops []rollback.Op
-		for _, s := range stages {
-			ops = append(ops, rollback.OpsForReport(s.p.Name(), cfg, s.report)...)
-		}
-		if path, err := rollback.Write(ops); err != nil {
-			u.Warn("could not write rollback script: %v", err)
-		} else if path != "" {
-			u.Dim("rollback script: %s", path)
-		}
-	}
-
-	r := runner.New(false)
-	u.Info("applying")
-	for _, s := range stages {
-		u.Info("plugin: %s", s.p.Name())
-		if err := s.p.Apply(cfg, st, r, u); err != nil {
-			return fmt.Errorf("%s apply: %w", s.p.Name(), err)
-		}
-		if err := s.p.PersistState(cfg, st); err != nil {
-			return fmt.Errorf("%s persist state: %w", s.p.Name(), err)
-		}
-	}
-
-	statePath := state.DefaultPath()
-	if err := state.Save(statePath, st); err != nil {
-		return fmt.Errorf("save state: %w", err)
-	}
-	u.Dim("state saved to %s", statePath)
-
-	if !c.Bool("no-lock") {
-		lockPath := c.String("lock")
-		if lockPath == "" {
-			lockPath = lockfile.DefaultPath(cfg.Path)
-		}
-		if err := lockfile.Write(lockPath, cfg); err != nil {
-			u.Warn("could not write lockfile: %v", err)
-		} else {
-			u.Dim("lockfile: %s", lockPath)
-		}
-	}
-
-	u.Info("done")
-	return nil
 }
 
 // bootstrap loads config + state and constructs the plugin registry.

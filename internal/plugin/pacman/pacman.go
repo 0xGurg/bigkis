@@ -15,13 +15,19 @@ import (
 
 type Pacman struct {
 	cachedDiff *plan.Diff
+	// runner is consulted by Plan for probes; if nil, Plan creates a fresh
+	// runner.New(false). Tests use SetRunner to inject a Fake.
+	runner *runner.Runner
 }
 
 func New() *Pacman { return &Pacman{} }
 
+// SetRunner injects a runner used by Plan for probes. Intended for tests.
+func (p *Pacman) SetRunner(r *runner.Runner) { p.runner = r }
+
 func (p *Pacman) Name() string { return config.PluginPacman }
 
-func (p *Pacman) Available() error {
+func (p *Pacman) Available(cfg *config.Config) error {
 	if !runner.HasCommand("pacman") {
 		return fmt.Errorf("pacman not found on PATH")
 	}
@@ -38,7 +44,10 @@ func (p *Pacman) Probe(r *runner.Runner) ([]string, error) {
 }
 
 func (p *Pacman) Plan(cfg *config.Config, st *state.State) (plugin.Report, error) {
-	r := runner.New(false)
+	r := p.runner
+	if r == nil {
+		r = runner.New(false)
+	}
 	actual, err := p.Probe(r)
 	if err != nil {
 		return plugin.Report{}, fmt.Errorf("probe pacman: %w", err)
@@ -60,13 +69,14 @@ func (p *Pacman) Plan(cfg *config.Config, st *state.State) (plugin.Report, error
 	return rep, nil
 }
 
-func (p *Pacman) Apply(cfg *config.Config, st *state.State, r *runner.Runner, u *ui.UI) error {
+func (p *Pacman) Apply(cfg *config.Config, st *state.State, report plugin.Report, r *runner.Runner, u *ui.UI) error {
 	if p.cachedDiff == nil {
-		if _, err := p.Plan(cfg, st); err != nil {
-			return err
-		}
+		return fmt.Errorf("pacman: Apply called before Plan")
 	}
 	d := *p.cachedDiff
+	if err := assertReportMatchesDiff(report, d); err != nil {
+		return fmt.Errorf("pacman: %w", err)
+	}
 	if !d.HasChanges() {
 		u.Step("pacman: nothing to do")
 		return nil
@@ -81,17 +91,75 @@ func (p *Pacman) Apply(cfg *config.Config, st *state.State, r *runner.Runner, u 
 	}
 
 	if len(d.Remove) > 0 {
+		// Capture pre-existing orphans so the prune below does not yank
+		// packages that were already orphans before bigkis touched anything.
+		preOrphans, err := captureOrphans(r)
+		if err != nil {
+			return fmt.Errorf("query existing orphans: %w", err)
+		}
+
 		u.Step("pacman: marking %d package(s) as deps", len(d.Remove))
 		demoteArgs := append([]string{"-D", "--asdeps"}, d.Remove...)
 		if _, err := r.Run(runner.Spec{Name: "pacman", Args: demoteArgs, Sudo: true}); err != nil {
 			return fmt.Errorf("pacman -D --asdeps: %w", err)
 		}
-		u.Step("pacman: pruning orphans")
-		if err := pruneOrphans(r); err != nil {
-			return err
+
+		mode := cfg.Settings.PruneOrphans
+		if mode == "" {
+			mode = config.PruneOrphansScoped
+		}
+		switch mode {
+		case config.PruneOrphansNone:
+		case config.PruneOrphansAll:
+			u.Step("pacman: pruning orphans (all)")
+			if err := pruneOrphans(r, nil); err != nil {
+				return err
+			}
+		default: // scoped
+			u.Step("pacman: pruning orphans (scoped to this apply)")
+			if err := pruneOrphans(r, preOrphans); err != nil {
+				return err
+			}
 		}
 	}
 	return nil
+}
+
+// assertReportMatchesDiff verifies the Report passed to Apply matches the
+// Diff captured during Plan. The orchestrator passes the user-confirmed
+// Report; we refuse to apply if it disagrees with the cached plan.
+func assertReportMatchesDiff(report plugin.Report, d plan.Diff) error {
+	declared := map[string]bool{}
+	for _, op := range report.Operations {
+		key := opKey(op.Kind, op.Target)
+		declared[key] = true
+	}
+	cached := map[string]bool{}
+	for _, name := range d.Add {
+		cached[opKey(plugin.OpAdd, name)] = true
+	}
+	for _, name := range d.Remove {
+		cached[opKey(plugin.OpRemove, name)] = true
+	}
+	for k := range declared {
+		if !cached[k] {
+			return fmt.Errorf("report op %q not in cached plan; rerun Plan", k)
+		}
+	}
+	for k := range cached {
+		if !declared[k] {
+			return fmt.Errorf("cached plan op %q not in report; rerun Plan", k)
+		}
+	}
+	return nil
+}
+
+func opKey(kind plugin.OpKind, target string) string {
+	prefix := "+"
+	if kind == plugin.OpRemove {
+		prefix = "-"
+	}
+	return prefix + target
 }
 
 func (p *Pacman) PersistState(cfg *config.Config, st *state.State) error {
@@ -99,23 +167,47 @@ func (p *Pacman) PersistState(cfg *config.Config, st *state.State) error {
 	return st.Set(p.Name(), declared)
 }
 
-// pruneOrphans removes packages that are installed only as dependencies of
-// nothing. It loops because removing an orphan may orphan more.
-func pruneOrphans(r *runner.Runner) error {
+// captureOrphans returns the current set of orphan packages on the system.
+// pacman -Qdtq exits with status 1 when there are no orphans, which we treat
+// as an empty set rather than an error.
+func captureOrphans(r *runner.Runner) (map[string]struct{}, error) {
+	out, err := r.Capture("pacman", "-Qdtq")
+	if err != nil {
+		if runner.IsExitCode(err, 1) {
+			return map[string]struct{}{}, nil
+		}
+		return nil, err
+	}
+	set := map[string]struct{}{}
+	for _, name := range splitLines(out) {
+		set[name] = struct{}{}
+	}
+	return set, nil
+}
+
+// pruneOrphans removes packages that are now installed only as dependencies
+// of nothing. When preExisting is non-nil, orphans whose names are in that
+// set are left alone (they were orphans before this apply). It loops because
+// removing an orphan may orphan more.
+func pruneOrphans(r *runner.Runner, preExisting map[string]struct{}) error {
 	for {
-		out, err := r.Capture("pacman", "-Qdtq")
+		current, err := captureOrphans(r)
 		if err != nil {
-			// pacman -Qdtq exits 1 when there are no orphans; treat as done.
-			if strings.Contains(err.Error(), "exit status 1") {
-				return nil
-			}
 			return fmt.Errorf("query orphans: %w", err)
 		}
-		orphans := splitLines(out)
-		if len(orphans) == 0 {
+		var toRemove []string
+		for name := range current {
+			if preExisting != nil {
+				if _, was := preExisting[name]; was {
+					continue
+				}
+			}
+			toRemove = append(toRemove, name)
+		}
+		if len(toRemove) == 0 {
 			return nil
 		}
-		args := append([]string{"-Rns", "--noconfirm"}, orphans...)
+		args := append([]string{"-Rns", "--noconfirm"}, toRemove...)
 		if _, err := r.Run(runner.Spec{Name: "pacman", Args: args, Sudo: true}); err != nil {
 			return fmt.Errorf("pacman -Rns orphans: %w", err)
 		}

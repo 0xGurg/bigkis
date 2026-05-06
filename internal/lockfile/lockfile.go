@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"codeberg.org/gurg/bigkis/internal/config"
+	"codeberg.org/gurg/bigkis/internal/state"
 )
 
 const SchemaVersion = 1
@@ -55,7 +56,7 @@ func Write(path string, cfg *config.Config) error {
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return fmt.Errorf("mkdir lockfile dir: %w", err)
 	}
-	return os.WriteFile(path, []byte(b.String()), 0o644)
+	return state.AtomicWrite(path, []byte(b.String()), 0o644)
 }
 
 func writePacman(b *strings.Builder, packages []string) {

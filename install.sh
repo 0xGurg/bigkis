@@ -5,6 +5,9 @@ repo="${BIGKIS_REPO:-https://codeberg.org/gurg/bigkis}"
 version="${BIGKIS_VERSION:-latest}"
 install_dir="${BIGKIS_INSTALL_DIR:-/usr/local/bin}"
 binary_name="${BIGKIS_BINARY:-bigkis}"
+# When set to 1, skip checksum verification. We default to fail-closed so
+# users get an actual error rather than a silently-unverified binary.
+insecure="${BIGKIS_INSECURE:-0}"
 
 say() {
   printf '%s\n' "$*"
@@ -42,9 +45,13 @@ download() {
   output="$2"
 
   if command -v curl >/dev/null 2>&1; then
+    # -f fails on HTTP errors so an HTML 404 doesn't get written as the
+    # binary; -L follows redirects.
     curl -fsSL "$url" -o "$output"
   elif command -v wget >/dev/null 2>&1; then
-    wget -q "$url" -O "$output"
+    # --tries=1 stops wget from retrying transient 5xx; --no-server-response
+    # keeps output clean. wget exits non-zero on HTTP errors by default.
+    wget -q --tries=1 -O "$output" "$url"
   else
     die "curl or wget is required to download bigkis"
   fi
@@ -109,22 +116,24 @@ say "  target:  $target"
 download "$binary_url" "$binary_path" || die "failed to download $binary_url"
 chmod +x "$binary_path"
 
-if download "$checksums_url" "$checksums_path" >/dev/null 2>&1; then
-  expected="$(awk -v file="$asset" '$2 == file {print $1}' "$checksums_path")"
-  if [ -n "$expected" ]; then
-    actual="$(sha256_file "$binary_path" || true)"
-    if [ -z "$actual" ]; then
-      say "warning: checksums.txt found but no sha256 tool is available; skipping checksum verification"
-    elif [ "$actual" != "$expected" ]; then
-      die "checksum mismatch for $asset"
-    else
-      say "  checksum: ok"
-    fi
-  else
-    say "warning: checksums.txt found but has no entry for $asset"
-  fi
+if [ "$insecure" = "1" ]; then
+  say "  checksum: SKIPPED (BIGKIS_INSECURE=1)"
 else
-  say "warning: checksums.txt not found for this release; skipping checksum verification"
+  if ! download "$checksums_url" "$checksums_path"; then
+    die "checksums.txt not found at $checksums_url; refusing to install without verification (set BIGKIS_INSECURE=1 to override)"
+  fi
+  expected="$(awk -v file="$asset" '$2 == file {print $1}' "$checksums_path")"
+  if [ -z "$expected" ]; then
+    die "checksums.txt has no entry for $asset"
+  fi
+  actual="$(sha256_file "$binary_path" || true)"
+  if [ -z "$actual" ]; then
+    die "no sha256 tool available; install sha256sum or shasum, or set BIGKIS_INSECURE=1"
+  fi
+  if [ "$actual" != "$expected" ]; then
+    die "checksum mismatch for $asset (expected $expected, got $actual)"
+  fi
+  say "  checksum: ok"
 fi
 
 dest="$install_dir/$binary_name"

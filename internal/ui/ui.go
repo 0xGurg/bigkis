@@ -27,6 +27,7 @@ type UI struct {
 	in    io.Reader
 	color bool
 	yes   bool
+	quiet bool
 }
 
 func New(out io.Writer, in io.Reader, color, assumeYes bool) *UI {
@@ -41,6 +42,10 @@ func Default(assumeYes bool) *UI {
 // SetAssumeYes toggles the auto-yes behavior at runtime so callers (e.g. the
 // CLI) can apply a --yes flag without losing the UI's other settings.
 func (u *UI) SetAssumeYes(yes bool) { u.yes = yes }
+
+// SetQuiet suppresses Info/Step/Add/Remove/Dim output. Warnings and errors
+// still print so script wrappers can surface them.
+func (u *UI) SetQuiet(quiet bool) { u.quiet = quiet }
 
 func isColorTerminal() bool {
 	return IsColorTTY(os.Stdout)
@@ -74,21 +79,33 @@ func (u *UI) paint(code, s string) string {
 
 // Info prints an informational line prefixed with "::".
 func (u *UI) Info(format string, args ...any) {
+	if u.quiet {
+		return
+	}
 	fmt.Fprintf(u.out, "%s %s\n", u.paint(ansiBlue+ansiBold, "::"), fmt.Sprintf(format, args...))
 }
 
 // Step prints a sub-step indented under an Info line.
 func (u *UI) Step(format string, args ...any) {
+	if u.quiet {
+		return
+	}
 	fmt.Fprintf(u.out, "  %s %s\n", u.paint(ansiCyan, "->"), fmt.Sprintf(format, args...))
 }
 
 // Add highlights an addition in green.
 func (u *UI) Add(format string, args ...any) {
+	if u.quiet {
+		return
+	}
 	fmt.Fprintf(u.out, "  %s %s\n", u.paint(ansiGreen, "+"), fmt.Sprintf(format, args...))
 }
 
 // Remove highlights a removal in red.
 func (u *UI) Remove(format string, args ...any) {
+	if u.quiet {
+		return
+	}
 	fmt.Fprintf(u.out, "  %s %s\n", u.paint(ansiRed, "-"), fmt.Sprintf(format, args...))
 }
 
@@ -104,6 +121,9 @@ func (u *UI) Errorf(format string, args ...any) {
 
 // Dim prints a dimmed informational message.
 func (u *UI) Dim(format string, args ...any) {
+	if u.quiet {
+		return
+	}
 	fmt.Fprintf(u.out, "%s\n", u.paint(ansiGrey, fmt.Sprintf(format, args...)))
 }
 

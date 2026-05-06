@@ -14,6 +14,7 @@ import (
 
 	"codeberg.org/gurg/bigkis/internal/config"
 	"codeberg.org/gurg/bigkis/internal/plugin"
+	"codeberg.org/gurg/bigkis/internal/state"
 )
 
 // MaxRetained controls how many rollback scripts are kept on disk. The oldest
@@ -145,7 +146,7 @@ func Write(ops []Op) (string, error) {
 		}
 	}
 
-	if err := os.WriteFile(path, []byte(b.String()), 0o755); err != nil {
+	if err := state.AtomicWrite(path, []byte(b.String()), 0o755); err != nil {
 		return "", fmt.Errorf("write rollback script: %w", err)
 	}
 

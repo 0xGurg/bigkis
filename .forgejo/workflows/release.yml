@@ -54,6 +54,32 @@ jobs:
         working-directory: dist
         run: sha256sum bigkis-linux-amd64 bigkis-linux-arm64 > checksums.txt
 
+      # Sign checksums.txt with minisign when a signing secret is configured.
+      # Set repo secrets MINISIGN_PRIVATE_KEY (the contents of the .key file)
+      # and MINISIGN_PASSWORD. Skipped silently when MINISIGN_PRIVATE_KEY is
+      # not set so installs without signing keep working.
+      - name: install minisign
+        if: ${{ secrets.MINISIGN_PRIVATE_KEY != '' }}
+        run: |
+          sudo apt-get update -y
+          sudo apt-get install -y minisign
+
+      - name: sign checksums.txt
+        if: ${{ secrets.MINISIGN_PRIVATE_KEY != '' }}
+        env:
+          MINISIGN_PRIVATE_KEY: ${{ secrets.MINISIGN_PRIVATE_KEY }}
+          MINISIGN_PASSWORD: ${{ secrets.MINISIGN_PASSWORD }}
+        working-directory: dist
+        run: |
+          umask 077
+          printf '%s\n' "$MINISIGN_PRIVATE_KEY" > minisign.key
+          # -W skips the password prompt when MINISIGN_PASSWORD is set in env.
+          printf '%s\n' "$MINISIGN_PASSWORD" | minisign -S \
+            -s minisign.key \
+            -m checksums.txt \
+            -t "bigkis ${GITHUB_REF_NAME}"
+          rm -f minisign.key
+
       - name: publish release
         uses: https://code.forgejo.org/actions/forgejo-release@v2
         with:

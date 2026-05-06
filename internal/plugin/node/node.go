@@ -27,6 +27,9 @@ const (
 // Node is the bigkis plugin for global node packages.
 type Node struct {
 	cached map[string]plan.Diff
+	// runner is consulted by Plan for probes; if nil, Plan creates a fresh
+	// runner.New(false). Tests use SetRunner to inject a Fake.
+	runner *runner.Runner
 }
 
 // persisted maps manager → declared package names from the most recent run.
@@ -34,11 +37,14 @@ type persisted map[string][]string
 
 func New() *Node { return &Node{} }
 
+// SetRunner injects a runner used by Plan for probes. Intended for tests.
+func (n *Node) SetRunner(r *runner.Runner) { n.runner = r }
+
 func (n *Node) Name() string { return config.PluginNode }
 
 // Available returns nil if at least one manager is on PATH. Individual
 // managers are checked again at Apply time per declared package.
-func (n *Node) Available() error {
+func (n *Node) Available(cfg *config.Config) error {
 	if !runner.HasCommand(mgrNPM) && !runner.HasCommand(mgrPNPM) && !runner.HasCommand(mgrYARN) {
 		return fmt.Errorf("none of npm, pnpm, yarn found on PATH")
 	}
@@ -47,7 +53,10 @@ func (n *Node) Available() error {
 
 func (n *Node) Plan(cfg *config.Config, st *state.State) (plugin.Report, error) {
 	declaredByMgr := groupDeclared(cfg)
-	r := runner.New(false)
+	r := n.runner
+	if r == nil {
+		r = runner.New(false)
+	}
 
 	var prev persisted
 	if _, err := st.Get(n.Name(), &prev); err != nil {
@@ -79,11 +88,12 @@ func (n *Node) Plan(cfg *config.Config, st *state.State) (plugin.Report, error) 
 	return rep, nil
 }
 
-func (n *Node) Apply(cfg *config.Config, st *state.State, r *runner.Runner, u *ui.UI) error {
+func (n *Node) Apply(cfg *config.Config, st *state.State, report plugin.Report, r *runner.Runner, u *ui.UI) error {
 	if n.cached == nil {
-		if _, err := n.Plan(cfg, st); err != nil {
-			return err
-		}
+		return fmt.Errorf("node: Apply called before Plan")
+	}
+	if err := assertReportMatchesCached(report, n.cached); err != nil {
+		return fmt.Errorf("node: %w", err)
 	}
 
 	any := false
@@ -119,6 +129,41 @@ func (n *Node) Apply(cfg *config.Config, st *state.State, r *runner.Runner, u *u
 
 	if !any {
 		u.Step("node: nothing to do")
+	}
+	return nil
+}
+
+// assertReportMatchesCached verifies the operations in report match the
+// per-manager cached diffs computed in Plan.
+func assertReportMatchesCached(report plugin.Report, cached map[string]plan.Diff) error {
+	type key struct {
+		kind    plugin.OpKind
+		target  string
+		manager string
+	}
+	declared := map[key]bool{}
+	for _, op := range report.Operations {
+		mgr := strings.TrimPrefix(op.Detail, "via ")
+		declared[key{op.Kind, op.Target, mgr}] = true
+	}
+	expected := map[key]bool{}
+	for mgr, d := range cached {
+		for _, name := range d.Add {
+			expected[key{plugin.OpAdd, name, mgr}] = true
+		}
+		for _, name := range d.Remove {
+			expected[key{plugin.OpRemove, name, mgr}] = true
+		}
+	}
+	for k := range declared {
+		if !expected[k] {
+			return fmt.Errorf("report op %+v not in cached plan; rerun Plan", k)
+		}
+	}
+	for k := range expected {
+		if !declared[k] {
+			return fmt.Errorf("cached plan op %+v not in report; rerun Plan", k)
+		}
 	}
 	return nil
 }
@@ -220,13 +265,16 @@ func probeManager(r *runner.Runner, mgr string) ([]string, error) {
 // probeNPMLike parses the output of `<mgr> ls -g --depth=0 --json`. Both npm
 // and pnpm support that flag set with compatible JSON.
 func probeNPMLike(r *runner.Runner, mgr string) ([]string, error) {
-	out, err := r.Capture(mgr, "ls", "-g", "--depth=0", "--json")
-	if err != nil {
-		// npm exits non-zero if any peer-dep complaint exists; we still try
-		// to parse stdout if it's valid JSON.
-		if out == "" {
-			return nil, err
+	out, captureErr := r.Capture(mgr, "ls", "-g", "--depth=0", "--json")
+	// npm and pnpm sometimes exit non-zero on peer-dep warnings while still
+	// emitting valid JSON on stdout. We try to parse stdout in any case;
+	// only if parsing also fails do we surface captureErr (which carries the
+	// captured stderr for diagnosis).
+	if out == "" {
+		if captureErr != nil {
+			return nil, captureErr
 		}
+		return nil, nil
 	}
 	type listOutput struct {
 		Dependencies map[string]any `json:"dependencies"`
@@ -250,6 +298,9 @@ func probeNPMLike(r *runner.Runner, mgr string) ([]string, error) {
 			names = append(names, k)
 		}
 		return names, nil
+	}
+	if captureErr != nil {
+		return nil, fmt.Errorf("parse %s ls output: %w", mgr, captureErr)
 	}
 	return nil, fmt.Errorf("could not parse %s ls output", mgr)
 }

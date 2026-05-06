@@ -1,8 +1,10 @@
 package state
 
 import (
+	"os"
 	"path/filepath"
 	"reflect"
+	"strings"
 	"testing"
 )
 
@@ -134,5 +136,62 @@ func TestSave_IsAtomic(t *testing.T) {
 	}
 	if !reflect.DeepEqual(v, []string{"neovim"}) {
 		t.Errorf("got %v, want [neovim]", v)
+	}
+
+	// No leftover *.tmp* files in the directory after Save.
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatalf("ReadDir: %v", err)
+	}
+	for _, e := range entries {
+		name := e.Name()
+		if strings.Contains(name, ".tmp") {
+			t.Errorf("leftover tmp file in state dir: %s", name)
+		}
+	}
+}
+
+func TestAtomicWrite_RoundTripAndMode(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "lock")
+	if err := AtomicWrite(path, []byte("hello"), 0o600); err != nil {
+		t.Fatalf("AtomicWrite: %v", err)
+	}
+	got, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("ReadFile: %v", err)
+	}
+	if string(got) != "hello" {
+		t.Errorf("contents = %q, want hello", got)
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatalf("Stat: %v", err)
+	}
+	if mode := info.Mode().Perm(); mode != 0o600 {
+		t.Errorf("mode = %o, want 0600", mode)
+	}
+}
+
+func TestAtomicWrite_OverwriteIsAtomic(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "lock")
+	if err := AtomicWrite(path, []byte("first"), 0o644); err != nil {
+		t.Fatalf("AtomicWrite first: %v", err)
+	}
+	if err := AtomicWrite(path, []byte("second"), 0o644); err != nil {
+		t.Fatalf("AtomicWrite second: %v", err)
+	}
+	got, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("ReadFile: %v", err)
+	}
+	if string(got) != "second" {
+		t.Errorf("got %q, want second", got)
+	}
+	entries, _ := os.ReadDir(dir)
+	for _, e := range entries {
+		if strings.Contains(e.Name(), ".tmp") {
+			t.Errorf("leftover tmp: %s", e.Name())
+		}
 	}
 }

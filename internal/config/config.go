@@ -29,6 +29,22 @@ var validPlugins = map[string]bool{
 var validAURHelpers = map[string]bool{"yay": true, "paru": true}
 var validNodeManagers = map[string]bool{"npm": true, "pnpm": true, "yarn": true}
 
+// Pacman orphan-prune modes. "scoped" (default) prunes only orphans that did
+// not exist before this apply; "all" prunes every orphan on the system after
+// demotion (the original 0.x behavior); "none" disables pruning entirely so
+// removed packages stay on disk as deps until the user prunes manually.
+const (
+	PruneOrphansScoped = "scoped"
+	PruneOrphansAll    = "all"
+	PruneOrphansNone   = "none"
+)
+
+var validPruneModes = map[string]bool{
+	PruneOrphansScoped: true,
+	PruneOrphansAll:    true,
+	PruneOrphansNone:   true,
+}
+
 // Config is the full TOML document, after include merging, host overlay
 // application, and group expansion.
 type Config struct {
@@ -52,6 +68,10 @@ type Settings struct {
 	Enabled     []string `toml:"enabled"`
 	AURHelper   string   `toml:"aur_helper"`
 	NodeManager string   `toml:"node_manager"`
+	// PruneOrphans controls how the pacman plugin prunes orphans after a
+	// removal: "scoped" (default), "all", or "none". See PruneOrphans*
+	// constants above.
+	PruneOrphans string `toml:"prune_orphans"`
 	// Include is a list of additional TOML files to merge in. Paths are
 	// resolved relative to the directory of the file that declared them.
 	// Includes are merged first; the file that includes them wins for
@@ -79,6 +99,8 @@ type Flatpak struct {
 	Ignored      []string            `toml:"ignored"`
 	UserPackages map[string][]string `toml:"user_packages"`
 	Groups       []string            `toml:"groups"`
+	// Remote is the flatpak remote name used for installs (default "flathub").
+	Remote string `toml:"remote"`
 }
 
 // Node declares globally-installed node packages.
@@ -211,6 +233,9 @@ func applyOverlay(base, overlay *Config) {
 	if overlay.Settings.NodeManager != "" {
 		base.Settings.NodeManager = overlay.Settings.NodeManager
 	}
+	if overlay.Settings.PruneOrphans != "" {
+		base.Settings.PruneOrphans = overlay.Settings.PruneOrphans
+	}
 	// Include is intentionally not merged into the result; it has already
 	// been processed by loadAndMerge.
 
@@ -245,6 +270,9 @@ func applyOverlay(base, overlay *Config) {
 			if v.Settings.NodeManager != "" {
 				merged.Settings.NodeManager = v.Settings.NodeManager
 			}
+			if v.Settings.PruneOrphans != "" {
+				merged.Settings.PruneOrphans = v.Settings.PruneOrphans
+			}
 			base.Hosts[k] = merged
 		}
 	}
@@ -266,6 +294,9 @@ func mergeFlatpak(b, o *Flatpak) {
 	b.Packages = mergeStrings(b.Packages, o.Packages)
 	b.Ignored = mergeStrings(b.Ignored, o.Ignored)
 	b.Groups = mergeStrings(b.Groups, o.Groups)
+	if o.Remote != "" {
+		b.Remote = o.Remote
+	}
 	if len(o.UserPackages) > 0 {
 		if b.UserPackages == nil {
 			b.UserPackages = map[string][]string{}
@@ -397,6 +428,12 @@ func (c *Config) applyDefaults() {
 	if c.Settings.NodeManager == "" {
 		c.Settings.NodeManager = "npm"
 	}
+	if c.Settings.PruneOrphans == "" {
+		c.Settings.PruneOrphans = PruneOrphansScoped
+	}
+	if c.Flatpak.Remote == "" {
+		c.Flatpak.Remote = "flathub"
+	}
 	if c.Flatpak.UserPackages == nil {
 		c.Flatpak.UserPackages = map[string][]string{}
 	}
@@ -419,6 +456,9 @@ func (c *Config) Validate() error {
 	}
 	if !validNodeManagers[c.Settings.NodeManager] {
 		return fmt.Errorf("settings.node_manager: %q invalid (valid: npm, pnpm, yarn)", c.Settings.NodeManager)
+	}
+	if !validPruneModes[c.Settings.PruneOrphans] {
+		return fmt.Errorf("settings.prune_orphans: %q invalid (valid: scoped, all, none)", c.Settings.PruneOrphans)
 	}
 	for i, np := range c.Node.Package {
 		if np.Name == "" {
