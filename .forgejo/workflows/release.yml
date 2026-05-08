@@ -54,6 +54,33 @@ jobs:
         working-directory: dist
         run: sha256sum bigkis-linux-amd64 bigkis-linux-arm64 > checksums.txt
 
+      # Extract the section of CHANGELOG.md matching this tag so it can be
+      # posted as the release body. Falls back to a placeholder when the tag
+      # has no entry, so the workflow still produces a release rather than
+      # blocking on a missing changelog stanza.
+      - name: extract release notes
+        id: notes
+        run: |
+          tag="${GITHUB_REF_NAME}"
+          file="$(mktemp)"
+          if [ -f CHANGELOG.md ]; then
+            awk -v tag="$tag" '
+              BEGIN { found = 0 }
+              # Match "## v0.4.1" or "## v0.4.1 - ..." but not "## v0.4.10".
+              $0 ~ "^## "tag"([[:space:]]|$)" { found = 1; next }
+              /^## v[0-9]/ && found { exit }
+              found { print }
+            ' CHANGELOG.md > "$file"
+          fi
+          if [ ! -s "$file" ]; then
+            printf 'Release %s. See CHANGELOG.md for details.\n' "$tag" > "$file"
+          fi
+          {
+            echo "release-notes<<BIGKIS_NOTES_EOF"
+            cat "$file"
+            echo "BIGKIS_NOTES_EOF"
+          } >> "$GITHUB_OUTPUT"
+
       # Sign checksums.txt with minisign when a signing secret is configured.
       # Set repo secrets MINISIGN_PRIVATE_KEY (the contents of the .key file)
       # and MINISIGN_PASSWORD. Skipped silently when MINISIGN_PRIVATE_KEY is
@@ -90,4 +117,5 @@ jobs:
           tag: ${{ github.ref_name }}
           title: ${{ github.ref_name }}
           token: ${{ secrets.GITHUB_TOKEN }}
+          release-notes: ${{ steps.notes.outputs.release-notes }}
           override: true

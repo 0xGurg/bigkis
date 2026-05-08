@@ -1,0 +1,112 @@
+# Changelog
+
+This file is the source of truth for release notes. The release workflow
+extracts the section matching each tag and uses it as the body of the
+corresponding [Codeberg release](https://codeberg.org/gurg/bigkis/releases),
+so the Codeberg releases page is the canonical place to read what changed.
+
+## v0.4.1
+
+Small follow-up to v0.4.0. No code behavior changes.
+
+### CI
+
+- Switch the `test` and `staticcheck` workflows from `codeberg-tiny` to
+  `codeberg-small`. The tiny runner's podman socket has been timing out
+  on the post-job cleanup step ("context deadline exceeded" on
+  `.../archive?path=SUMMARY.md`), failing the workflows even when
+  `go vet` / `go test -race` / `staticcheck` had already completed.
+  The release workflow already runs on `codeberg-small`; align the rest.
+
+### Release plumbing
+
+- Release notes now live in this `CHANGELOG.md` at the repo root and are
+  attached as the body of each Codeberg release by the release workflow.
+  Replaces the previous `wiki/Changelog.md` page.
+
+### Docs
+
+- The Installation wiki page now points at `bigkis import` for
+  bootstrapping a `system.toml` from an existing Arch install, with the
+  recommended `import` -> `check` -> `doctor` -> `status` flow.
+
+## v0.4.0 - "ownership and recovery correctness"
+
+This release fixes a handful of correctness and safety bugs found during a
+post-v0.3 audit, polishes the CLI surface, and adds a `bigkis doctor`
+preflight subcommand.
+
+### Behavior changes worth knowing
+
+- **`apply --json` exits 3 on drift** when changes would be applied.
+  Previously it always exited 0. The wiki has documented this contract
+  since v0.3; this is the implementation catching up.
+- **`apply` now persists ownership state for plugins that are already in
+  sync**. Without this, a clean first run on a fresh machine left
+  `state.json` empty and the first-run-safety in `plan.Compute` quietly
+  inhibited every future removal.
+- **AUR helper runs as `$SUDO_USER` instead of root.** When you `sudo
+  bigkis apply`, the AUR plugin drops privileges to the user that invoked
+  sudo. Running bigkis as root with no `SUDO_USER` (e.g. `su` first, then
+  `bigkis apply`) is rejected at `Available()` time, before any prompt.
+- **Rollback scripts now reflect only what actually applied.** They are
+  written at the end of `apply`, after each stage's success, so a partial
+  failure no longer produces a script that tries to undo work that never
+  happened.
+- **Explicit `--config` no longer falls through.** A missing `--config`
+  path is a hard error instead of silently picking
+  `/etc/bigkis/system.toml` from the search path.
+- **Status doesn't claim "system matches declaration" if a plugin was
+  skipped** as unavailable. Human output prints which plugins were
+  skipped; `--json` adds an `incomplete` flag.
+
+### Bug fixes
+
+- **`runner.Run` no longer panics** when `cmd.Run()` fails before exec
+  (missing binary, exec permission denied). The synthesized exit code is
+  -1.
+- **`bigkis rollback --latest`** prints "no rollback scripts" instead of
+  panicking when there are no scripts on disk.
+- **Rollback scripts honor `cfg.Flatpak.Remote`** instead of hardcoding
+  `flathub`. Custom remotes survive a rollback.
+- **Rollback file names include nanoseconds** so two applies in the same
+  second don't clobber each other.
+- **Rollback scripts use POSIX single-quote escaping** for every target
+  rather than Go's `%q`.
+- **Lockfile records `[flatpak.user_packages]`** so per-user flatpaks
+  aren't invisible in the lockfile.
+- **`explain` recognises `[flatpak.user_packages]` declarations** and
+  treats "declared in plugin A, installed via plugin B" as drift instead
+  of "in sync".
+- **Importer**: `--only flatpak` now writes
+  `enabled = ["flatpak"]` so a subsequent `apply` doesn't queue removals
+  for sections the import never populated. npm/pnpm probe errors now
+  surface instead of being swallowed.
+- **Host overlays carry `settings.prune_orphans`** alongside `aur_helper`
+  / `node_manager`.
+- **Node**: a manager that's referenced (in declared or previously
+  declared packages) but missing on `PATH` now fails `status` /
+  `apply --dry-run` instead of silently treating the live system as
+  empty.
+
+### New features
+
+- **`bigkis doctor`**: preflight checks for the host (commands on PATH,
+  root context, writable state/rollback dirs) and the loaded config (AUR
+  helper, declared node managers, flatpak remote). Human output by
+  default, `--json` for tooling. Exits 1 on any failing check.
+- **`bigkis status --only` / `--skip`**: mirror the apply flags so you
+  can scope status checks to one plugin.
+
+### Polish
+
+- `--quiet` is honored by the very first log line (the dim "config: ..."
+  trace) instead of after the fact.
+- Bash, zsh, and fish completions ship with all current flags
+  (`--exit-on-drift`, `--json`, `--quiet`, the new `doctor` command,
+  rollback flags, etc.).
+- README install example pins `v0.4.0`.
+
+## v0.3.0
+
+See the [v0.3.0 release](https://codeberg.org/gurg/bigkis/releases/tag/v0.3.0).
