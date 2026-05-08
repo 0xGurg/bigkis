@@ -117,10 +117,15 @@ jobs:
           token: ${{ secrets.GITHUB_TOKEN }}
           override: true
 
-      # Patch the release body via the Codeberg API. forgejo-release@v2's own
+      # Patch the release body via the Codeberg API. The action's own
       # release-notes input feeds the value through a quoted heredoc inside
-      # the action and is fragile for multi-paragraph markdown; the API
+      # its bash and is fragile for multi-paragraph markdown; the API
       # accepts arbitrary content as a JSON string, which is much safer.
+      #
+      # All python invocations here are one-liners on purpose: a multi-line
+      # `python3 -c` inside a YAML `run: |` block easily breaks the literal
+      # scalar's indentation, which causes Forgejo Actions to silently fail
+      # to register the workflow at all.
       - name: set release body from changelog
         env:
           TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -128,20 +133,7 @@ jobs:
           TAG: ${{ github.ref_name }}
         run: |
           set -eu
-          release_id=$(curl -fsSL \
-            -H "Authorization: token $TOKEN" \
-            "https://codeberg.org/api/v1/repos/$REPO/releases/tags/$TAG" \
-            | python3 -c 'import json,sys; print(json.load(sys.stdin)["id"])')
-          payload=$(python3 -c '
-import json, sys
-with open("release-notes.md") as f:
-    body = f.read()
-print(json.dumps({"body": body}))
-')
-          curl -fsSL -X PATCH \
-            -H "Authorization: token $TOKEN" \
-            -H "Content-Type: application/json" \
-            -d "$payload" \
-            "https://codeberg.org/api/v1/repos/$REPO/releases/$release_id" \
-            > /dev/null
+          release_id=$(curl -fsSL -H "Authorization: token $TOKEN" "https://codeberg.org/api/v1/repos/$REPO/releases/tags/$TAG" | python3 -c 'import json,sys; print(json.load(sys.stdin)["id"])')
+          payload=$(python3 -c 'import json; print(json.dumps({"body": open("release-notes.md").read()}))')
+          curl -fsSL -X PATCH -H "Authorization: token $TOKEN" -H "Content-Type: application/json" -d "$payload" "https://codeberg.org/api/v1/repos/$REPO/releases/$release_id" > /dev/null
           echo "release body for $TAG updated"

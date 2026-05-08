@@ -5,12 +5,12 @@ extracts the section matching each tag and uses it as the body of the
 corresponding [Codeberg release](https://codeberg.org/gurg/bigkis/releases),
 so the Codeberg releases page is the canonical place to read what changed.
 
-## v0.4.2
+## v0.4.3
 
 Small follow-up to v0.4.0. No code behavior changes; this is CI, release
-plumbing, and docs only. (v0.4.1 was burned during release-engineering
-iteration on the workflow that attaches release notes; the changes that
-would have shipped as v0.4.1 are folded into v0.4.2.)
+plumbing, and docs only. (v0.4.1 and v0.4.2 were burned during
+release-engineering iteration on the workflow that attaches release notes;
+the changes that would have shipped there are folded into v0.4.3.)
 
 ### CI
 
