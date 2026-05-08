@@ -275,3 +275,40 @@ func TestPlan_BuildsReportWithViaManager(t *testing.T) {
 		t.Errorf("ops = %+v, want 1 op with detail 'via npm'", report.Operations)
 	}
 }
+
+// TestPlan_FailsWhenDeclaredManagerMissing guards against the regression
+// where probeManager silently returned an empty actual set for a missing
+// manager and Plan reported "in sync" right up until apply blew up.
+func TestPlan_FailsWhenDeclaredManagerMissing(t *testing.T) {
+	stubLookPath(t, map[string]bool{"npm": true, "pnpm": false, "yarn": false})
+	f := runner.NewFake()
+	n := New()
+	n.SetRunner(f.Runner)
+	cfg := &config.Config{
+		Settings: config.Settings{NodeManager: "pnpm"},
+		Node:     config.Node{Packages: []string{"typescript"}},
+	}
+	_, err := n.Plan(cfg, &state.State{})
+	if err == nil || !strings.Contains(err.Error(), "pnpm") {
+		t.Fatalf("expected missing-pnpm error, got %v", err)
+	}
+}
+
+// TestPlan_FailsWhenPrevManagerMissing covers the case where a manager was
+// previously used (and so appears in state) but has since been uninstalled.
+// We must surface that during planning so the user sees it before confirming.
+func TestPlan_FailsWhenPrevManagerMissing(t *testing.T) {
+	stubLookPath(t, map[string]bool{"npm": true, "pnpm": false, "yarn": false})
+	st := &state.State{}
+	if err := st.Set("node", persisted{"pnpm": []string{"typescript"}}); err != nil {
+		t.Fatal(err)
+	}
+	f := runner.NewFake()
+	n := New()
+	n.SetRunner(f.Runner)
+	cfg := &config.Config{Settings: config.Settings{NodeManager: "npm"}}
+	_, err := n.Plan(cfg, st)
+	if err == nil || !strings.Contains(err.Error(), "pnpm") {
+		t.Fatalf("expected missing-pnpm error from prev-state, got %v", err)
+	}
+}

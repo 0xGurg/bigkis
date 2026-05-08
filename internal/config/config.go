@@ -378,6 +378,9 @@ func (c *Config) applyHostOverlay(hostname string) {
 	if overlay.Settings.NodeManager != "" {
 		c.Settings.NodeManager = overlay.Settings.NodeManager
 	}
+	if overlay.Settings.PruneOrphans != "" {
+		c.Settings.PruneOrphans = overlay.Settings.PruneOrphans
+	}
 	mergePacman(&c.Pacman, &overlay.Pacman)
 	mergeAUR(&c.AUR, &overlay.AUR)
 	mergeFlatpak(&c.Flatpak, &overlay.Flatpak)
@@ -484,20 +487,31 @@ func (c *Config) IsEnabled(name string) bool {
 	return false
 }
 
-// resolvePath returns the first existing path among:
-//  1. explicit (the --config flag)
-//  2. $BIGKIS_CONFIG
-//  3. /etc/bigkis/system.toml
-//  4. $XDG_CONFIG_HOME/bigkis/system.toml or ~/.config/bigkis/system.toml
+// resolvePath resolves a config path. An explicit --config (or
+// $BIGKIS_CONFIG) overrides the search path entirely: if it points at a
+// missing file, that's a hard error rather than a silent fallthrough to
+// /etc/bigkis/system.toml. Without an explicit path, we walk the default
+// search path and return the first match.
+//
+// Search path (no explicit override):
+//  1. /etc/bigkis/system.toml
+//  2. $XDG_CONFIG_HOME/bigkis/system.toml
+//  3. ~/.config/bigkis/system.toml
 func resolvePath(explicit string) (string, error) {
-	candidates := []string{}
+	if explicit == "" {
+		explicit = os.Getenv("BIGKIS_CONFIG")
+	}
 	if explicit != "" {
-		candidates = append(candidates, explicit)
+		if _, err := os.Stat(explicit); err != nil {
+			if errors.Is(err, os.ErrNotExist) {
+				return "", fmt.Errorf("config not found: %s", explicit)
+			}
+			return "", fmt.Errorf("stat %s: %w", explicit, err)
+		}
+		return filepath.Abs(explicit)
 	}
-	if env := os.Getenv("BIGKIS_CONFIG"); env != "" {
-		candidates = append(candidates, env)
-	}
-	candidates = append(candidates, "/etc/bigkis/system.toml")
+
+	candidates := []string{"/etc/bigkis/system.toml"}
 	if xdg := os.Getenv("XDG_CONFIG_HOME"); xdg != "" {
 		candidates = append(candidates, filepath.Join(xdg, "bigkis", "system.toml"))
 	}

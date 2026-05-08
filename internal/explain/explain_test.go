@@ -88,6 +88,14 @@ func TestDerive_AllBranches(t *testing.T) {
 		{"drift removed", Result{Managed: []string{"pacman"}, Installed: []Install{{Plugin: "pacman"}}}, "no longer declared"},
 		{"unmanaged", Result{Installed: []Install{{Plugin: "pacman"}}}, "unmanaged"},
 		{"unknown", Result{}, "unknown"},
+		{
+			"declared-pacman-installed-flatpak",
+			Result{
+				Declared:  []Source{{Plugin: "pacman"}},
+				Installed: []Install{{Plugin: "flatpak"}},
+			},
+			"declared via pacman but installed via flatpak",
+		},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -96,5 +104,25 @@ func TestDerive_AllBranches(t *testing.T) {
 				t.Errorf("derive = %q, want substring %q", got, c.contains)
 			}
 		})
+	}
+}
+
+func TestInspect_FlatpakUserPackagesAreDeclared(t *testing.T) {
+	cfg := &config.Config{
+		Flatpak: config.Flatpak{
+			UserPackages: map[string][]string{
+				"alice": {"com.valvesoftware.Steam"},
+			},
+		},
+	}
+	r := Inspect("com.valvesoftware.Steam", cfg, &state.State{})
+	if len(r.Declared) == 0 {
+		t.Fatalf("expected per-user flatpak to count as declared, got %v", r.Declared)
+	}
+	if r.Declared[0].Plugin != "flatpak" {
+		t.Errorf("plugin = %q, want flatpak", r.Declared[0].Plugin)
+	}
+	if !strings.Contains(r.Declared[0].Where, "user_packages.alice") {
+		t.Errorf("Where = %q, want user_packages.alice scope", r.Declared[0].Where)
 	}
 }

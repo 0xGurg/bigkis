@@ -26,7 +26,7 @@ curl -fsSL https://codeberg.org/gurg/bigkis/raw/branch/main/install.sh | sh
 To pin a version or change install location:
 
 ```sh
-BIGKIS_VERSION=v0.3.0 sh install.sh
+BIGKIS_VERSION=v0.4.0 sh install.sh
 BIGKIS_INSTALL_DIR="$HOME/.local/bin" sh install.sh
 ```
 
@@ -39,10 +39,11 @@ Write a `system.toml` (see [`examples/system.toml`](examples/system.toml)),
 then:
 
 ```sh
+bigkis doctor                    # preflight checks (PATH, helper, remote, perms)
 bigkis status                    # show drift, no changes
 bigkis status --exit-on-drift    # exit 3 when drift detected (CI-friendly)
 bigkis apply --dry-run           # show what would change
-bigkis apply --json              # emit machine-readable plan, do not apply
+bigkis apply --json              # emit machine-readable plan; exit 3 on drift
 sudo bigkis apply                # apply system plugins and write state
 sudo bigkis apply --yes --quiet  # skip the prompt, suppress info logs
 ```
@@ -60,6 +61,8 @@ Full docs live on the
   bootstrap, manual binary, declarative AUR, source build and cross-compile.
 - [Configuration](https://codeberg.org/gurg/bigkis/wiki/Configuration) -
   `system.toml` schema and config search paths.
+- [Doctor](https://codeberg.org/gurg/bigkis/wiki/Doctor) - preflight checks
+  before the first apply.
 - [Pacman Baseline](https://codeberg.org/gurg/bigkis/wiki/Pacman-Baseline) -
   choosing your explicit baseline, bootstrapping from an existing Arch install,
   and the `ignored` list.

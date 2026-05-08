@@ -46,8 +46,12 @@ func TestApplyStages_CheckpointsAfterEachPlugin(t *testing.T) {
 		{Plugin: &fakePlugin{name: "pacman", stateValue: []string{"git"}}, Report: plugin.Report{Plugin: "pacman"}},
 		{Plugin: &fakePlugin{name: "aur", stateValue: []string{"yay-bin"}}, Report: plugin.Report{Plugin: "aur"}},
 	}
-	if err := applyStages(stages, cfg, st, statePath, runner.NewFake().Runner, logUI); err != nil {
+	applied, err := applyStages(stages, cfg, st, statePath, runner.NewFake().Runner, logUI)
+	if err != nil {
 		t.Fatalf("applyStages: %v", err)
+	}
+	if len(applied) != 2 {
+		t.Fatalf("expected 2 applied stages, got %d", len(applied))
 	}
 
 	loaded, err := state.Load(statePath)
@@ -76,8 +80,12 @@ func TestApplyStages_MidLoopFailureKeepsSuccessfulCheckpoints(t *testing.T) {
 		{Plugin: &fakePlugin{name: "aur", applyErr: boom}, Report: plugin.Report{Plugin: "aur"}},
 		{Plugin: &fakePlugin{name: "node", stateValue: []string{"typescript"}}, Report: plugin.Report{Plugin: "node"}},
 	}
-	if err := applyStages(stages, cfg, st, statePath, runner.NewFake().Runner, logUI); err == nil {
+	applied, err := applyStages(stages, cfg, st, statePath, runner.NewFake().Runner, logUI)
+	if err == nil {
 		t.Fatal("expected error from second stage, got nil")
+	}
+	if len(applied) != 1 || applied[0].Plugin.Name() != "pacman" {
+		t.Errorf("applied = %+v, want only pacman", applied)
 	}
 
 	// state.json should reflect ONLY the pacman stage (which succeeded), not
@@ -97,5 +105,42 @@ func TestApplyStages_MidLoopFailureKeepsSuccessfulCheckpoints(t *testing.T) {
 	var node []string
 	if found, _ := loaded.Get("node", &node); found {
 		t.Errorf("node should not be in state (never ran), got %v", node)
+	}
+}
+
+// TestPersistInSync_RecordsOwnershipForFirstRunClean exercises the new
+// post-apply (and post-no-op-apply) state writeout for plugins that had no
+// changes. Without this, a clean first run leaves lastApplied empty so the
+// first-run-safety in plan.Compute inhibits removals indefinitely.
+func TestPersistInSync_RecordsOwnershipForFirstRunClean(t *testing.T) {
+	statePath := filepath.Join(t.TempDir(), "state.json")
+	cfg := &config.Config{}
+	st := &state.State{}
+	logUI := ui.New(io.Discard, &bytes.Buffer{}, false, true)
+
+	plugins := []plugin.Plugin{
+		&fakePlugin{name: "pacman", stateValue: []string{"git", "neovim"}},
+		&fakePlugin{name: "node", stateValue: []string{"typescript"}},
+	}
+	if err := persistInSync(plugins, cfg, st, statePath, logUI); err != nil {
+		t.Fatalf("persistInSync: %v", err)
+	}
+	for _, p := range plugins {
+		if (p.(*fakePlugin)).appliedHere {
+			t.Errorf("%s.Apply should not have been called by persistInSync", p.Name())
+		}
+	}
+
+	loaded, err := state.Load(statePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var pac []string
+	if _, err := loaded.Get("pacman", &pac); err != nil || len(pac) != 2 {
+		t.Errorf("pacman = %v, err=%v", pac, err)
+	}
+	var node []string
+	if _, err := loaded.Get("node", &node); err != nil || len(node) != 1 {
+		t.Errorf("node = %v, err=%v", node, err)
 	}
 }

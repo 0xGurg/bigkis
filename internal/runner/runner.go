@@ -126,8 +126,15 @@ func (r *Runner) Run(spec Spec) (Result, error) {
 	}
 
 	err := cmd.Run()
+	// cmd.ProcessState is nil when the command failed before exec (missing
+	// binary, exec permission denied, fork error). Guard the nil deref so we
+	// surface the underlying error instead of panicking.
+	exitCode := -1
+	if cmd.ProcessState != nil {
+		exitCode = cmd.ProcessState.ExitCode()
+	}
 	res := Result{
-		ExitCode: cmd.ProcessState.ExitCode(),
+		ExitCode: exitCode,
 		Stdout:   outBuf.String(),
 		Stderr:   errBuf.String(),
 	}

@@ -5,6 +5,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"codeberg.org/gurg/bigkis/internal/config"
 	"codeberg.org/gurg/bigkis/internal/plugin"
@@ -127,11 +128,11 @@ func TestList_MissingDirReturnsEmpty(t *testing.T) {
 }
 
 func TestPacmanCommand(t *testing.T) {
-	cmd := pacmanCommand(plugin.OpAdd)([]string{"git", "neovim"}, "", "")
+	cmd := pacmanCommand(plugin.OpAdd)(emitArgs{targets: []string{"git", "neovim"}})
 	if !strings.Contains(cmd, "pacman -S --needed --noconfirm") {
 		t.Errorf("got %q", cmd)
 	}
-	cmd = pacmanCommand(plugin.OpRemove)([]string{"git"}, "", "")
+	cmd = pacmanCommand(plugin.OpRemove)(emitArgs{targets: []string{"git"}})
 	if !strings.Contains(cmd, "pacman -Rns --noconfirm") {
 		t.Errorf("got %q", cmd)
 	}
@@ -148,11 +149,17 @@ func TestNodeCommand_PerManager(t *testing.T) {
 		{"yarn", "global add", "global remove"},
 	}
 	for _, c := range cases {
-		add := nodeCommand(plugin.OpAdd)([]string{"typescript"}, "via "+c.mgr, "")
+		add := nodeCommand(plugin.OpAdd)(emitArgs{
+			targets: []string{"typescript"},
+			detail:  "via " + c.mgr,
+		})
 		if !strings.Contains(add, c.mgr+" "+c.add) {
 			t.Errorf("%s add = %q", c.mgr, add)
 		}
-		rem := nodeCommand(plugin.OpRemove)([]string{"typescript"}, "via "+c.mgr, "")
+		rem := nodeCommand(plugin.OpRemove)(emitArgs{
+			targets: []string{"typescript"},
+			detail:  "via " + c.mgr,
+		})
 		if !strings.Contains(rem, c.mgr+" "+c.rem) {
 			t.Errorf("%s remove = %q", c.mgr, rem)
 		}
@@ -160,19 +167,88 @@ func TestNodeCommand_PerManager(t *testing.T) {
 }
 
 func TestFlatpakCommand_UserVsSystem(t *testing.T) {
-	sys := flatpakCommand(plugin.OpAdd)([]string{"org.mozilla.firefox"}, "system", "")
+	sys := flatpakCommand(plugin.OpAdd)(emitArgs{
+		targets: []string{"org.mozilla.firefox"},
+		detail:  "system",
+	})
 	if !strings.Contains(sys, "sudo flatpak install --system") {
 		t.Errorf("system add = %q", sys)
 	}
-	usr := flatpakCommand(plugin.OpAdd)([]string{"com.valvesoftware.Steam"}, "user alice", "")
+	usr := flatpakCommand(plugin.OpAdd)(emitArgs{
+		targets: []string{"com.valvesoftware.Steam"},
+		detail:  "user alice",
+	})
 	if !strings.Contains(usr, "sudo -u alice flatpak install --user") {
 		t.Errorf("user add = %q", usr)
 	}
 }
 
+// TestFlatpakCommand_HonorsCustomRemote guards the regression where the
+// rollback script always re-installed from "flathub" even when the apply ran
+// against a different remote.
+func TestFlatpakCommand_HonorsCustomRemote(t *testing.T) {
+	cmd := flatpakCommand(plugin.OpAdd)(emitArgs{
+		targets: []string{"org.mozilla.firefox"},
+		detail:  "system",
+		remote:  "fedora",
+	})
+	if !strings.Contains(cmd, " fedora org.mozilla.firefox") {
+		t.Errorf("custom remote not honored: %q", cmd)
+	}
+	if strings.Contains(cmd, "flathub") {
+		t.Errorf("rollback should not reference flathub when remote=fedora: %q", cmd)
+	}
+}
+
+// TestFlatpakCommand_DefaultsToFlathub checks the unset-remote fallback.
+func TestFlatpakCommand_DefaultsToFlathub(t *testing.T) {
+	cmd := flatpakCommand(plugin.OpAdd)(emitArgs{
+		targets: []string{"org.mozilla.firefox"},
+		detail:  "system",
+	})
+	if !strings.Contains(cmd, " flathub org.mozilla.firefox") {
+		t.Errorf("expected flathub default: %q", cmd)
+	}
+}
+
 func TestAURCommand_UsesHelper(t *testing.T) {
-	cmd := aurCommand(plugin.OpAdd)([]string{"yay"}, "", "paru")
+	cmd := aurCommand(plugin.OpAdd)(emitArgs{
+		targets: []string{"yay"},
+		helper:  "paru",
+	})
 	if !strings.HasPrefix(cmd, "paru -S") {
 		t.Errorf("aur add = %q, want paru prefix", cmd)
+	}
+}
+
+// TestShellQuote_RoundTripsTrickyTargets makes sure POSIX single-quote
+// escaping covers the awkward cases that used to ride through %q.
+func TestShellQuote_RoundTripsTrickyTargets(t *testing.T) {
+	cases := []struct {
+		in   string
+		want string
+	}{
+		{"git", "git"},
+		{"@vue/cli", "@vue/cli"},
+		{"name with space", "'name with space'"},
+		{"weird;rm -rf /", `'weird;rm -rf /'`},
+		{"with'quote", `'with'\''quote'`},
+		{"", "''"},
+	}
+	for _, c := range cases {
+		if got := shellQuote(c.in); got != c.want {
+			t.Errorf("shellQuote(%q) = %q, want %q", c.in, got, c.want)
+		}
+	}
+}
+
+// TestNewID_Unique guards against same-second collisions on rapid applies.
+// The format includes nanoseconds so two consecutive calls produce distinct
+// IDs as long as the clock advances at all between them.
+func TestNewID_Unique(t *testing.T) {
+	t1 := time.Date(2026, 5, 7, 12, 0, 0, 1, time.UTC)
+	t2 := time.Date(2026, 5, 7, 12, 0, 0, 2, time.UTC)
+	if newID(t1) == newID(t2) {
+		t.Errorf("expected distinct IDs for 1ns-apart times")
 	}
 }

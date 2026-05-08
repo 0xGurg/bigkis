@@ -67,6 +67,24 @@ func Inspect(pkg string, cfg *config.Config, st *state.State) Result {
 				r.Declared = append(r.Declared, Source{Plugin: "node", Where: where})
 			}
 		}
+		// [flatpak.user_packages.<user>] entries: prior versions of explain
+		// missed these entirely, so per-user flatpaks would render as
+		// undeclared even though the flatpak plugin manages them.
+		userKeys := make([]string, 0, len(cfg.Flatpak.UserPackages))
+		for u := range cfg.Flatpak.UserPackages {
+			userKeys = append(userKeys, u)
+		}
+		sort.Strings(userKeys)
+		for _, user := range userKeys {
+			for _, p := range cfg.Flatpak.UserPackages[user] {
+				if p == pkg {
+					r.Declared = append(r.Declared, Source{
+						Plugin: "flatpak",
+						Where:  "[flatpak.user_packages." + user + "]",
+					})
+				}
+			}
+		}
 	}
 
 	r.Installed = probeInstalls(pkg)
@@ -233,7 +251,14 @@ func derive(r Result) string {
 	case ignored:
 		return "ignored (bigkis will not touch this package)"
 	case declared && installed:
-		return "in sync"
+		// A package is "in sync" only when at least one declared plugin
+		// matches one of the install probes. Otherwise the user has e.g.
+		// declared the pacman version but the system has the flatpak app,
+		// which is real drift the next apply needs to act on.
+		if pluginsOverlap(r.Declared, r.Installed) {
+			return "in sync"
+		}
+		return "drift: declared via " + joinDeclared(r.Declared) + " but installed via " + joinInstalled(r.Installed)
 	case declared && !installed:
 		return "drift: declared but not installed (next apply will install)"
 	case !declared && managed:
@@ -244,6 +269,45 @@ func derive(r Result) string {
 		return "unknown (not declared, not installed, not in state)"
 	}
 	return "unknown"
+}
+
+func pluginsOverlap(decl []Source, ins []Install) bool {
+	have := map[string]bool{}
+	for _, d := range decl {
+		have[d.Plugin] = true
+	}
+	for _, i := range ins {
+		if have[i.Plugin] {
+			return true
+		}
+	}
+	return false
+}
+
+func joinDeclared(ss []Source) string {
+	seen := map[string]bool{}
+	var out []string
+	for _, s := range ss {
+		if seen[s.Plugin] {
+			continue
+		}
+		seen[s.Plugin] = true
+		out = append(out, s.Plugin)
+	}
+	return strings.Join(out, ",")
+}
+
+func joinInstalled(ins []Install) string {
+	seen := map[string]bool{}
+	var out []string
+	for _, i := range ins {
+		if seen[i.Plugin] {
+			continue
+		}
+		seen[i.Plugin] = true
+		out = append(out, i.Plugin)
+	}
+	return strings.Join(out, ",")
 }
 
 // Render produces a human-readable text rendering of the Result.

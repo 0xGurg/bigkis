@@ -79,6 +79,7 @@ func TestAvailable_RejectsMissingHelper(t *testing.T) {
 
 func TestAvailable_AcceptsHelperOnPath(t *testing.T) {
 	stubLookPath(t, map[string]bool{"pacman": true, "yay": true})
+	stubProcessUser(t, 1000, map[string]string{})
 	a := New()
 	cfg := &config.Config{Settings: config.Settings{AURHelper: "yay"}}
 	if err := a.Available(cfg); err != nil {
@@ -112,6 +113,7 @@ func TestApply_RejectsCallBeforePlan(t *testing.T) {
 
 func TestApply_UsesConfiguredHelper(t *testing.T) {
 	stubLookPath(t, map[string]bool{"pacman": true, "paru": true})
+	stubProcessUser(t, 1000, map[string]string{})
 	planF := runner.NewFake()
 	planF.Respond = func(name string, args []string) (string, string, int, error) {
 		// Empty foreign-package list, so all declared packages are adds.
@@ -137,5 +139,111 @@ func TestApply_UsesConfiguredHelper(t *testing.T) {
 	}
 	if applyF.Calls[0].Name != "paru" || applyF.Calls[0].Sudo {
 		t.Errorf("expected unsudoed paru, got %+v", applyF.Calls[0])
+	}
+}
+
+// stubProcessUser replaces the geteuid/getenv hooks so tests can simulate
+// running as root with a SUDO_USER, as root without one, or as a regular
+// user. It also restores the originals when the test ends.
+func stubProcessUser(t *testing.T, euid int, env map[string]string) {
+	t.Helper()
+	origUID := geteuid
+	origEnv := getenv
+	geteuid = func() int { return euid }
+	getenv = func(k string) string { return env[k] }
+	t.Cleanup(func() {
+		geteuid = origUID
+		getenv = origEnv
+	})
+}
+
+func TestAvailable_RejectsRootWithoutSudoUser(t *testing.T) {
+	stubLookPath(t, map[string]bool{"pacman": true, "yay": true})
+	stubProcessUser(t, 0, map[string]string{})
+	a := New()
+	cfg := &config.Config{Settings: config.Settings{AURHelper: "yay"}}
+	err := a.Available(cfg)
+	if err == nil || !strings.Contains(err.Error(), "SUDO_USER") {
+		t.Errorf("expected SUDO_USER error, got %v", err)
+	}
+}
+
+func TestAvailable_RejectsRootWithSudoUserRoot(t *testing.T) {
+	stubLookPath(t, map[string]bool{"pacman": true, "yay": true})
+	stubProcessUser(t, 0, map[string]string{"SUDO_USER": "root"})
+	a := New()
+	cfg := &config.Config{Settings: config.Settings{AURHelper: "yay"}}
+	if err := a.Available(cfg); err == nil || !strings.Contains(err.Error(), "SUDO_USER=root") {
+		t.Errorf("expected SUDO_USER=root error, got %v", err)
+	}
+}
+
+func TestAvailable_AcceptsSudoFromRegularUser(t *testing.T) {
+	stubLookPath(t, map[string]bool{"pacman": true, "yay": true})
+	stubProcessUser(t, 0, map[string]string{"SUDO_USER": "alice"})
+	a := New()
+	cfg := &config.Config{Settings: config.Settings{AURHelper: "yay"}}
+	if err := a.Available(cfg); err != nil {
+		t.Errorf("unexpected error: %v", err)
+	}
+}
+
+func TestApply_DropsToSudoUserWhenInvokedAsRoot(t *testing.T) {
+	stubLookPath(t, map[string]bool{"pacman": true, "yay": true})
+	stubProcessUser(t, 0, map[string]string{"SUDO_USER": "alice"})
+	planF := runner.NewFake()
+	planF.Respond = func(name string, args []string) (string, string, int, error) {
+		return "", "", 1, runner.NewExitError(1, "exit status 1")
+	}
+	a := New()
+	a.SetRunner(planF.Runner)
+	cfg := &config.Config{
+		Settings: config.Settings{AURHelper: "yay"},
+		AUR:      config.AUR{Packages: []string{"fnm-bin"}},
+	}
+	report, err := a.Plan(cfg, &state.State{})
+	if err != nil {
+		t.Fatalf("Plan: %v", err)
+	}
+
+	applyF := runner.NewFake()
+	if err := a.Apply(cfg, &state.State{}, report, applyF.Runner, silentUI()); err != nil {
+		t.Fatalf("Apply: %v", err)
+	}
+	if len(applyF.Calls) != 1 {
+		t.Fatalf("expected 1 call, got %+v", applyF.Calls)
+	}
+	if got := applyF.Calls[0].User; got != "alice" {
+		t.Errorf("expected helper to run as alice, got User=%q (call=%+v)", got, applyF.Calls[0])
+	}
+}
+
+func TestApply_KeepsCurrentUserWhenInvokedUnprivileged(t *testing.T) {
+	stubLookPath(t, map[string]bool{"pacman": true, "yay": true})
+	stubProcessUser(t, 1000, map[string]string{})
+	planF := runner.NewFake()
+	planF.Respond = func(name string, args []string) (string, string, int, error) {
+		return "", "", 1, runner.NewExitError(1, "exit status 1")
+	}
+	a := New()
+	a.SetRunner(planF.Runner)
+	cfg := &config.Config{
+		Settings: config.Settings{AURHelper: "yay"},
+		AUR:      config.AUR{Packages: []string{"fnm-bin"}},
+	}
+	report, err := a.Plan(cfg, &state.State{})
+	if err != nil {
+		t.Fatalf("Plan: %v", err)
+	}
+
+	applyF := runner.NewFake()
+	if err := a.Apply(cfg, &state.State{}, report, applyF.Runner, silentUI()); err != nil {
+		t.Fatalf("Apply: %v", err)
+	}
+	if len(applyF.Calls) != 1 {
+		t.Fatalf("expected 1 call, got %+v", applyF.Calls)
+	}
+	if got := applyF.Calls[0].User; got != "" {
+		t.Errorf("expected helper to run as current user (User=\"\"), got %q", got)
 	}
 }

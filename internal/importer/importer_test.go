@@ -45,6 +45,36 @@ func TestRun_OnlyFiltersSections(t *testing.T) {
 	}
 }
 
+// TestRun_OnlyTrimsEnabledList guards the regression where importing only
+// flatpak still wrote settings.enabled = ["pacman", "aur", "flatpak", "node"]
+// and so the next bigkis apply queued removals for sections we never wrote.
+func TestRun_OnlyTrimsEnabledList(t *testing.T) {
+	var buf bytes.Buffer
+	if err := Run(&buf, Options{Only: []string{"flatpak"}}); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	out := buf.String()
+	if !strings.Contains(out, `enabled      = ["flatpak"]`) {
+		t.Errorf("expected enabled list trimmed to flatpak only, got:\n%s", out)
+	}
+}
+
+func TestEnabledList_IgnoresUnknownAndDedupes(t *testing.T) {
+	got := enabledList([]string{"flatpak", "flatpak", "snap", "pacman"})
+	want := `["flatpak", "pacman"]`
+	if got != want {
+		t.Errorf("enabledList = %q, want %q", got, want)
+	}
+}
+
+func TestEnabledList_EmptyOnlyKeepsAll(t *testing.T) {
+	got := enabledList(nil)
+	want := `["pacman", "aur", "flatpak", "node"]`
+	if got != want {
+		t.Errorf("enabledList(nil) = %q, want %q", got, want)
+	}
+}
+
 func TestRun_CustomScalars(t *testing.T) {
 	var buf bytes.Buffer
 	if err := Run(&buf, Options{AURHelper: "paru", NodeManager: "pnpm"}); err != nil {

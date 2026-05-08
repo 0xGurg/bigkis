@@ -64,6 +64,17 @@ func (n *Node) Plan(cfg *config.Config, st *state.State) (plugin.Report, error) 
 	}
 
 	managers := allManagers(declaredByMgr, prev)
+
+	// Surface a missing manager during planning rather than silently treating
+	// the live system as empty. probeManager used to return (nil, nil) when a
+	// manager was missing, which masked drift: status said "in sync" and the
+	// failure only fired after the user had already confirmed apply.
+	for _, m := range managers {
+		if !runner.HasCommand(m) {
+			return plugin.Report{}, fmt.Errorf("node manager %q referenced by declared or previously-declared packages but not on PATH; install it or remove those packages from configuration", m)
+		}
+	}
+
 	diffs := map[string]plan.Diff{}
 	for _, m := range managers {
 		actual, err := probeManager(r, m)

@@ -29,6 +29,9 @@ type Op struct {
 	Detail string
 	// AURHelper is only meaningful when Plugin is "aur".
 	AURHelper string
+	// FlatpakRemote is only meaningful when Plugin is "flatpak". Empty means
+	// "flathub" so older Op values continue to work.
+	FlatpakRemote string
 }
 
 // Script is a rollback script that has been written to disk.
@@ -66,11 +69,12 @@ func OpsForReport(pluginName string, cfg *config.Config, r plugin.Report) []Op {
 			inverse = plugin.OpAdd
 		}
 		ops = append(ops, Op{
-			Plugin:    pluginName,
-			Kind:      inverse,
-			Target:    op.Target,
-			Detail:    op.Detail,
-			AURHelper: cfg.Settings.AURHelper,
+			Plugin:        pluginName,
+			Kind:          inverse,
+			Target:        op.Target,
+			Detail:        op.Detail,
+			AURHelper:     cfg.Settings.AURHelper,
+			FlatpakRemote: cfg.Flatpak.Remote,
 		})
 	}
 	return ops
@@ -78,6 +82,10 @@ func OpsForReport(pluginName string, cfg *config.Config, r plugin.Report) []Op {
 
 // Write writes a rollback script for the given operations and returns its
 // path. If ops is empty no script is written and the returned path is "".
+//
+// Filenames include nanosecond precision so two applies in the same second
+// don't clobber each other; rollback IDs sort lexicographically in time
+// order.
 func Write(ops []Op) (string, error) {
 	if len(ops) == 0 {
 		return "", nil
@@ -86,7 +94,7 @@ func Write(ops []Op) (string, error) {
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return "", fmt.Errorf("mkdir rollback dir: %w", err)
 	}
-	id := time.Now().UTC().Format("20060102T150405Z")
+	id := newID(time.Now().UTC())
 	path := filepath.Join(dir, "rollback-"+id+".sh")
 
 	var b strings.Builder
@@ -104,14 +112,21 @@ func Write(ops []Op) (string, error) {
 		kind   plugin.OpKind
 		detail string
 		helper string
+		remote string
 	}
 	groups := map[key][]string{}
 	for _, op := range ops {
-		k := key{plugin: op.Plugin, kind: op.Kind, detail: op.Detail, helper: op.AURHelper}
+		k := key{
+			plugin: op.Plugin,
+			kind:   op.Kind,
+			detail: op.Detail,
+			helper: op.AURHelper,
+			remote: op.FlatpakRemote,
+		}
 		groups[k] = append(groups[k], op.Target)
 	}
 
-	type emitFn func(targets []string, detail, helper string) string
+	type emitFn func(emitArgs) string
 	emit := func(plugin string, kind plugin.OpKind) emitFn {
 		switch plugin {
 		case "pacman":
@@ -123,7 +138,7 @@ func Write(ops []Op) (string, error) {
 		case "node":
 			return nodeCommand(kind)
 		}
-		return func([]string, string, string) string { return "" }
+		return func(emitArgs) string { return "" }
 	}
 
 	keys := make([]key, 0, len(groups))
@@ -140,7 +155,12 @@ func Write(ops []Op) (string, error) {
 	for _, k := range keys {
 		targets := groups[k]
 		sort.Strings(targets)
-		cmd := emit(k.plugin, k.kind)(targets, k.detail, k.helper)
+		cmd := emit(k.plugin, k.kind)(emitArgs{
+			targets: targets,
+			detail:  k.detail,
+			helper:  k.helper,
+			remote:  k.remote,
+		})
 		if cmd != "" {
 			fmt.Fprintln(&b, cmd)
 		}
@@ -155,6 +175,13 @@ func Write(ops []Op) (string, error) {
 		_ = err
 	}
 	return path, nil
+}
+
+// newID returns the rollback identifier for a given UTC instant. We keep
+// nanosecond precision so concurrent applies (or two manual runs in the same
+// second) don't collide on the same file.
+func newID(t time.Time) string {
+	return t.UTC().Format("20060102T150405.000000000Z")
 }
 
 // List returns the rollback scripts in chronological order (oldest first).
@@ -207,9 +234,19 @@ func pruneOldScripts(dir string) error {
 
 // command emitters -----------------------------------------------------------
 
-func pacmanCommand(kind plugin.OpKind) func(targets []string, detail, helper string) string {
-	return func(targets []string, detail, helper string) string {
-		joined := strings.Join(quoteAll(targets), " ")
+// emitArgs bundles the inputs each per-plugin command emitter needs. It's
+// defined at package scope so the emitters and their tests can share the
+// type without referencing Write's local types.
+type emitArgs struct {
+	targets []string
+	detail  string
+	helper  string
+	remote  string
+}
+
+func pacmanCommand(kind plugin.OpKind) func(emitArgs) string {
+	return func(a emitArgs) string {
+		joined := strings.Join(shellQuoteAll(a.targets), " ")
 		switch kind {
 		case plugin.OpAdd:
 			return "sudo pacman -S --needed --noconfirm " + joined
@@ -220,12 +257,13 @@ func pacmanCommand(kind plugin.OpKind) func(targets []string, detail, helper str
 	}
 }
 
-func aurCommand(kind plugin.OpKind) func(targets []string, detail, helper string) string {
-	return func(targets []string, detail, helper string) string {
+func aurCommand(kind plugin.OpKind) func(emitArgs) string {
+	return func(a emitArgs) string {
+		helper := a.helper
 		if helper == "" {
 			helper = "yay"
 		}
-		joined := strings.Join(quoteAll(targets), " ")
+		joined := strings.Join(shellQuoteAll(a.targets), " ")
 		switch kind {
 		case plugin.OpAdd:
 			return helper + " -S --needed --noconfirm " + joined
@@ -236,25 +274,29 @@ func aurCommand(kind plugin.OpKind) func(targets []string, detail, helper string
 	}
 }
 
-func flatpakCommand(kind plugin.OpKind) func(targets []string, detail, helper string) string {
-	return func(targets []string, detail, helper string) string {
-		joined := strings.Join(quoteAll(targets), " ")
+func flatpakCommand(kind plugin.OpKind) func(emitArgs) string {
+	return func(a emitArgs) string {
+		joined := strings.Join(shellQuoteAll(a.targets), " ")
+		remote := a.remote
+		if remote == "" {
+			remote = "flathub"
+		}
 		systemFlag := "--system"
 		var sudoPrefix string
 		userPrefix := ""
-		if strings.HasPrefix(detail, "user ") {
-			user := strings.TrimPrefix(detail, "user ")
+		if strings.HasPrefix(a.detail, "user ") {
+			user := strings.TrimPrefix(a.detail, "user ")
 			systemFlag = "--user"
-			userPrefix = "sudo -u " + user + " "
+			userPrefix = "sudo -u " + shellQuote(user) + " "
 		} else {
 			sudoPrefix = "sudo "
 		}
 		switch kind {
 		case plugin.OpAdd:
 			if userPrefix != "" {
-				return userPrefix + "flatpak install " + systemFlag + " --noninteractive --assumeyes flathub " + joined
+				return userPrefix + "flatpak install " + systemFlag + " --noninteractive --assumeyes " + shellQuote(remote) + " " + joined
 			}
-			return sudoPrefix + "flatpak install " + systemFlag + " --noninteractive --assumeyes flathub " + joined
+			return sudoPrefix + "flatpak install " + systemFlag + " --noninteractive --assumeyes " + shellQuote(remote) + " " + joined
 		case plugin.OpRemove:
 			if userPrefix != "" {
 				return userPrefix + "flatpak uninstall " + systemFlag + " --noninteractive --assumeyes " + joined
@@ -265,13 +307,13 @@ func flatpakCommand(kind plugin.OpKind) func(targets []string, detail, helper st
 	}
 }
 
-func nodeCommand(kind plugin.OpKind) func(targets []string, detail, helper string) string {
-	return func(targets []string, detail, helper string) string {
-		mgr := strings.TrimPrefix(detail, "via ")
+func nodeCommand(kind plugin.OpKind) func(emitArgs) string {
+	return func(a emitArgs) string {
+		mgr := strings.TrimPrefix(a.detail, "via ")
 		if mgr == "" {
 			mgr = "npm"
 		}
-		joined := strings.Join(quoteAll(targets), " ")
+		joined := strings.Join(shellQuoteAll(a.targets), " ")
 		switch kind {
 		case plugin.OpAdd:
 			return mgr + " " + addArgs(mgr) + " " + joined
@@ -302,12 +344,41 @@ func removeArgs(mgr string) string {
 	return "uninstall -g"
 }
 
-func quoteAll(items []string) []string {
+// shellQuote wraps a string in POSIX single-quotes so it survives `sh -c`
+// regardless of the characters it contains. Single quotes inside the string
+// terminate-quote, escape, and re-open: `it's` -> `'it'\”s'`. We use this
+// for every argument we emit into the rollback script.
+func shellQuote(s string) string {
+	if s == "" {
+		return "''"
+	}
+	if !needsQuoting(s) {
+		return s
+	}
+	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
+}
+
+func shellQuoteAll(items []string) []string {
 	out := make([]string, len(items))
 	for i, x := range items {
-		// Package names are restrictive enough not to need shell quoting,
-		// but quote anyway so things like `@scope/pkg` survive.
-		out[i] = fmt.Sprintf("%q", x)
+		out[i] = shellQuote(x)
 	}
 	return out
+}
+
+// needsQuoting returns true when the string is not a strictly-safe POSIX
+// shell word and so must be quoted. Anything outside the conservative
+// alphanumerics + "+-./@_:" set goes through the single-quote branch.
+func needsQuoting(s string) bool {
+	for _, r := range s {
+		switch {
+		case r >= 'a' && r <= 'z':
+		case r >= 'A' && r <= 'Z':
+		case r >= '0' && r <= '9':
+		case r == '_' || r == '-' || r == '.' || r == '/' || r == '@' || r == '+' || r == ':':
+		default:
+			return true
+		}
+	}
+	return false
 }

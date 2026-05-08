@@ -11,6 +11,7 @@ import (
 	"github.com/urfave/cli/v2"
 
 	"codeberg.org/gurg/bigkis/internal/config"
+	"codeberg.org/gurg/bigkis/internal/doctor"
 	"codeberg.org/gurg/bigkis/internal/explain"
 	"codeberg.org/gurg/bigkis/internal/importer"
 	"codeberg.org/gurg/bigkis/internal/lockfile"
@@ -55,6 +56,7 @@ func main() {
 			applyCommand(),
 			statusCommand(),
 			checkCommand(),
+			doctorCommand(),
 			importCommand(),
 			explainCommand(),
 			rollbackCommand(),
@@ -102,6 +104,8 @@ func statusCommand() *cli.Command {
 		Flags: []cli.Flag{
 			&cli.BoolFlag{Name: "json", Usage: "emit machine-readable JSON to stdout (logs go to stderr)"},
 			&cli.BoolFlag{Name: "exit-on-drift", Usage: "exit with code 3 instead of 0 when drift is detected"},
+			&cli.StringSliceFlag{Name: "only", Usage: "only check these plugins (comma-separated)"},
+			&cli.StringSliceFlag{Name: "skip", Usage: "skip these plugins (comma-separated)"},
 		},
 		Action: runStatus,
 	}
@@ -126,6 +130,41 @@ func checkCommand() *cli.Command {
 			return nil
 		},
 	}
+}
+
+func doctorCommand() *cli.Command {
+	return &cli.Command{
+		Name:  "doctor",
+		Usage: "run preflight checks on the host and config",
+		Flags: []cli.Flag{
+			&cli.BoolFlag{Name: "json", Usage: "emit machine-readable JSON to stdout"},
+		},
+		Action: runDoctor,
+	}
+}
+
+func runDoctor(c *cli.Context) error {
+	cfg, cfgErr := config.Load(c.String("config"))
+	env := doctor.DefaultEnv(state.DefaultPath(), rollback.Dir())
+	report := doctor.Run(cfg, cfgErr, env)
+
+	if c.Bool("json") {
+		enc := json.NewEncoder(os.Stdout)
+		enc.SetIndent("", "  ")
+		if err := enc.Encode(report); err != nil {
+			return err
+		}
+		if !report.OK {
+			return cli.Exit("", ExitError)
+		}
+		return nil
+	}
+
+	fmt.Print(report.Render())
+	if !report.OK {
+		return cli.Exit("", ExitError)
+	}
+	return nil
 }
 
 func importCommand() *cli.Command {
@@ -219,6 +258,12 @@ func rollbackCommand() *cli.Command {
 					return fmt.Errorf("no rollback script with id %s", id)
 				}
 			} else {
+				// --latest with no scripts on disk used to panic via the
+				// negative-index slice. Surface the empty case cleanly.
+				if len(scripts) == 0 {
+					u.Info("no rollback scripts in %s", rollback.Dir())
+					return nil
+				}
 				target = scripts[len(scripts)-1]
 			}
 
@@ -264,11 +309,15 @@ func runStatus(c *cli.Context) error {
 	if err != nil {
 		return err
 	}
-	plugins := selectPlugins(cfg.Settings.Enabled, nil, nil, reg, u)
+	only := splitCSV(c.StringSlice("only"))
+	skip := splitCSV(c.StringSlice("skip"))
+	plugins := selectPlugins(cfg.Settings.Enabled, only, skip, reg, u)
 	hasChanges := false
+	var unavailable []string
 	for _, p := range plugins {
 		if err := p.Available(cfg); err != nil {
 			u.Warn("%s: unavailable (%v); skipping", p.Name(), err)
+			unavailable = append(unavailable, p.Name())
 			continue
 		}
 		report, err := p.Plan(cfg, st)
@@ -284,7 +333,14 @@ func runStatus(c *cli.Context) error {
 		printReport(u, report)
 	}
 	if !hasChanges {
-		u.Info("system matches declaration")
+		// Don't claim "system matches declaration" when at least one plugin
+		// was skipped: we literally couldn't check those, and silent passes
+		// in CI would hide drift introduced by a missing tool.
+		if len(unavailable) > 0 {
+			u.Warn("system matches declaration for available plugins; %d skipped (%s)", len(unavailable), strings.Join(unavailable, ", "))
+		} else {
+			u.Info("system matches declaration")
+		}
 		return nil
 	}
 	if c.Bool("exit-on-drift") {
@@ -314,19 +370,27 @@ func runStatusJSON(c *cli.Context) error {
 		Operations  []opJSON `json:"operations"`
 	}
 	type reportJSON struct {
-		ConfigPath string       `json:"configPath"`
-		InSync     bool         `json:"inSync"`
+		ConfigPath string `json:"configPath"`
+		InSync     bool   `json:"inSync"`
+		// Incomplete signals that one or more plugins could not be checked
+		// (e.g. their tools are missing). Tooling should treat InSync=true
+		// + Incomplete=true as "no detected drift, but this run did not
+		// observe every plugin."
+		Incomplete bool         `json:"incomplete"`
 		Plugins    []pluginJSON `json:"plugins"`
 	}
 
 	out := reportJSON{ConfigPath: cfg.Path, InSync: true}
 
-	plugins := selectPlugins(cfg.Settings.Enabled, nil, nil, reg, ui.New(os.Stderr, os.Stdin, false, true))
+	only := splitCSV(c.StringSlice("only"))
+	skip := splitCSV(c.StringSlice("skip"))
+	plugins := selectPlugins(cfg.Settings.Enabled, only, skip, reg, ui.New(os.Stderr, os.Stdin, false, true))
 	for _, p := range plugins {
 		pj := pluginJSON{Name: p.Name(), Available: true, InSync: true}
 		if err := p.Available(cfg); err != nil {
 			pj.Available = false
 			pj.AvailableEr = err.Error()
+			out.Incomplete = true
 			out.Plugins = append(out.Plugins, pj)
 			continue
 		}
@@ -372,9 +436,6 @@ func runApply(c *cli.Context) error {
 	if c.Bool("yes") {
 		u.SetAssumeYes(true)
 	}
-	if c.Bool("quiet") {
-		u.SetQuiet(true)
-	}
 	only := splitCSV(c.StringSlice("only"))
 	skip := splitCSV(c.StringSlice("skip"))
 
@@ -384,18 +445,31 @@ func runApply(c *cli.Context) error {
 		return nil
 	}
 
-	stages, overallChanges, err := planAll(cfg, st, plugins, u)
+	plan, err := planAll(cfg, st, plugins, u)
 	if err != nil {
 		return err
 	}
 
-	if !overallChanges {
-		u.Info("system matches declaration; nothing to do")
+	if dryRun {
+		if !plan.overall {
+			u.Info("system matches declaration; nothing to do")
+		} else {
+			u.Info("dry-run: not applying")
+		}
 		return nil
 	}
 
-	if dryRun {
-		u.Info("dry-run: not applying")
+	statePath := state.DefaultPath()
+
+	// First-run safety: even when there are no stages to apply, persist the
+	// declared set so subsequent applies can plan removals. Without this
+	// step a clean "everything is already installed" first run leaves
+	// lastApplied empty and removals are silently inhibited forever.
+	if !plan.overall {
+		u.Info("system matches declaration; nothing to do")
+		if err := persistInSync(plan.insync, cfg, st, statePath, u); err != nil {
+			return err
+		}
 		return nil
 	}
 
@@ -404,22 +478,33 @@ func runApply(c *cli.Context) error {
 		return cli.Exit("aborted by user", ExitUserCancelled)
 	}
 
+	r := runner.New(false)
+	u.Info("applying")
+	applied, applyErr := applyStages(plan.stages, cfg, st, statePath, r, u)
+
+	// Always write the rollback script for the stages that actually applied,
+	// even on partial failure. Earlier versions wrote the rollback before
+	// any stage ran, so a partial-failure rollback would try to undo work
+	// that never happened.
 	if !c.Bool("no-rollback") {
 		var ops []rollback.Op
-		for _, s := range stages {
+		for _, s := range applied {
 			ops = append(ops, rollback.OpsForReport(s.Plugin.Name(), cfg, s.Report)...)
 		}
-		if path, err := rollback.Write(ops); err != nil {
-			u.Warn("could not write rollback script: %v", err)
-		} else if path != "" {
-			u.Dim("rollback script: %s", path)
+		if len(ops) > 0 {
+			if path, err := rollback.Write(ops); err != nil {
+				u.Warn("could not write rollback script: %v", err)
+			} else if path != "" {
+				u.Dim("rollback script: %s", path)
+			}
 		}
 	}
 
-	r := runner.New(false)
-	u.Info("applying")
-	statePath := state.DefaultPath()
-	if err := applyStages(stages, cfg, st, statePath, r, u); err != nil {
+	if applyErr != nil {
+		return applyErr
+	}
+
+	if err := persistInSync(plan.insync, cfg, st, statePath, u); err != nil {
 		return err
 	}
 	u.Dim("state saved to %s", statePath)
@@ -447,51 +532,87 @@ type stage struct {
 	Report plugin.Report
 }
 
-// planAll runs Plan for each plugin and returns the stages with changes,
-// plus whether anything overall has changes. Plugins whose Available()
-// returns an error are skipped with a warning.
-func planAll(cfg *config.Config, st *state.State, plugins []plugin.Plugin, u *ui.UI) ([]stage, bool, error) {
-	var stages []stage
-	overall := false
+// planResult is the structured outcome of planning every selected plugin.
+// Stages carry the plugins with pending changes; insync carries the plugins
+// that were available but already in sync (we still need their declared set
+// recorded so future applies can plan removals); unavailable just records
+// what we skipped so the orchestrator can surface "incomplete" results.
+type planResult struct {
+	stages      []stage
+	insync      []plugin.Plugin
+	unavailable []string
+	overall     bool
+}
+
+// planAll runs Plan for each plugin. Plugins whose Available() returns an
+// error are skipped with a warning and recorded in unavailable.
+func planAll(cfg *config.Config, st *state.State, plugins []plugin.Plugin, u *ui.UI) (planResult, error) {
+	var res planResult
 	u.Info("planning")
 	for _, p := range plugins {
 		if err := p.Available(cfg); err != nil {
 			u.Warn("%s: unavailable (%v); skipping", p.Name(), err)
+			res.unavailable = append(res.unavailable, p.Name())
 			continue
 		}
 		report, err := p.Plan(cfg, st)
 		if err != nil {
-			return nil, false, fmt.Errorf("%s plan: %w", p.Name(), err)
+			return planResult{}, fmt.Errorf("%s plan: %w", p.Name(), err)
 		}
 		if !report.HasChanges() {
 			u.Step("%s: in sync", p.Name())
+			res.insync = append(res.insync, p)
 			continue
 		}
-		overall = true
+		res.overall = true
 		u.Step("%s: %d change(s)", p.Name(), len(report.Operations))
 		printReport(u, report)
-		stages = append(stages, stage{Plugin: p, Report: report})
+		res.stages = append(res.stages, stage{Plugin: p, Report: report})
 	}
-	return stages, overall, nil
+	return res, nil
 }
 
 // applyStages runs each stage's Apply + PersistState and checkpoints the
-// state file after every successful plugin. This way a failure mid-loop
-// leaves state.json describing what was actually applied, not a stale
-// snapshot from before the run started.
-func applyStages(stages []stage, cfg *config.Config, st *state.State, statePath string, r *runner.Runner, u *ui.UI) error {
+// state file after every successful plugin. It returns the stages that
+// completed successfully so the caller can write a rollback script that
+// matches reality even on partial failure.
+func applyStages(stages []stage, cfg *config.Config, st *state.State, statePath string, r *runner.Runner, u *ui.UI) ([]stage, error) {
+	var applied []stage
 	for _, s := range stages {
 		u.Info("plugin: %s", s.Plugin.Name())
 		if err := s.Plugin.Apply(cfg, st, s.Report, r, u); err != nil {
-			return fmt.Errorf("%s apply: %w", s.Plugin.Name(), err)
+			return applied, fmt.Errorf("%s apply: %w", s.Plugin.Name(), err)
 		}
 		if err := s.Plugin.PersistState(cfg, st); err != nil {
-			return fmt.Errorf("%s persist state: %w", s.Plugin.Name(), err)
+			return applied, fmt.Errorf("%s persist state: %w", s.Plugin.Name(), err)
 		}
 		if statePath != "" {
 			if err := state.Save(statePath, st); err != nil {
-				return fmt.Errorf("checkpoint state after %s: %w", s.Plugin.Name(), err)
+				return applied, fmt.Errorf("checkpoint state after %s: %w", s.Plugin.Name(), err)
 			}
+		}
+		applied = append(applied, s)
+	}
+	return applied, nil
+}
+
+// persistInSync writes ownership state for plugins that planned no changes.
+// Without this, a first-run-clean machine never records what bigkis owns,
+// so a later removal from the config would be inhibited by first-run safety
+// in plan.Compute. Plugins with pending stages already had PersistState
+// called inside applyStages and shouldn't appear in this list.
+func persistInSync(plugins []plugin.Plugin, cfg *config.Config, st *state.State, statePath string, u *ui.UI) error {
+	if len(plugins) == 0 {
+		return nil
+	}
+	for _, p := range plugins {
+		if err := p.PersistState(cfg, st); err != nil {
+			return fmt.Errorf("%s persist state: %w", p.Name(), err)
+		}
+	}
+	if statePath != "" {
+		if err := state.Save(statePath, st); err != nil {
+			return fmt.Errorf("save state: %w", err)
 		}
 	}
 	return nil
@@ -501,6 +622,10 @@ func applyStages(stages []stage, cfg *config.Config, st *state.State, statePath 
 // apply changes; the JSON mode is intended for tooling that wants the same
 // shape as `status --json` plus an explicit dryRun flag. Combine with
 // --no-rollback / --no-lock to script around bigkis.
+//
+// Exit codes mirror status --exit-on-drift: drift produces ExitDrift (3) so
+// scripts can branch on "would-have-applied" without parsing JSON. The wiki
+// has documented this for a while; older builds always returned 0.
 func runApplyJSON(c *cli.Context) error {
 	cfg, st, reg, _, err := bootstrapTo(c, os.Stderr)
 	if err != nil {
@@ -524,6 +649,7 @@ func runApplyJSON(c *cli.Context) error {
 		ConfigPath string       `json:"configPath"`
 		DryRun     bool         `json:"dryRun"`
 		InSync     bool         `json:"inSync"`
+		Incomplete bool         `json:"incomplete"`
 		Plugins    []pluginJSON `json:"plugins"`
 	}
 
@@ -536,6 +662,7 @@ func runApplyJSON(c *cli.Context) error {
 		if err := p.Available(cfg); err != nil {
 			pj.Available = false
 			pj.AvailableEr = err.Error()
+			out.Incomplete = true
 			out.Plugins = append(out.Plugins, pj)
 			continue
 		}
@@ -559,7 +686,13 @@ func runApplyJSON(c *cli.Context) error {
 
 	enc := json.NewEncoder(os.Stdout)
 	enc.SetIndent("", "  ")
-	return enc.Encode(out)
+	if err := enc.Encode(out); err != nil {
+		return err
+	}
+	if !out.InSync {
+		return cli.Exit("", ExitDrift)
+	}
+	return nil
 }
 
 // bootstrap loads config + state and constructs the plugin registry.
@@ -569,8 +702,12 @@ func bootstrap(c *cli.Context) (*config.Config, *state.State, *plugin.Registry, 
 
 // bootstrapTo is bootstrap, but lets the caller route UI output to a specific
 // writer (useful so JSON output on stdout is not polluted by logs).
+//
+// We honor --quiet here (rather than after the fact) so the dim "config: ..."
+// trace line stays out of the way when the operator asked for silence.
 func bootstrapTo(c *cli.Context, logTo *os.File) (*config.Config, *state.State, *plugin.Registry, *ui.UI, error) {
-	u := ui.New(logTo, os.Stdin, ui.IsColorTTY(logTo), false)
+	quiet := c.Bool("quiet")
+	u := ui.New(logTo, os.Stdin, ui.IsColorTTY(logTo), quiet)
 
 	cfg, err := config.Load(c.String("config"))
 	if err != nil {
@@ -687,7 +824,7 @@ const bashCompletionScript = `# bigkis bash completion
 _bigkis_complete() {
     local cur prev words cword
     _init_completion || return
-    local subcommands="apply status check import explain rollback completion help"
+    local subcommands="apply status check doctor import explain rollback completion help"
     local plugins="pacman aur flatpak node"
 
     if [ "$cword" -eq 1 ]; then
@@ -697,13 +834,19 @@ _bigkis_complete() {
 
     case "${words[1]}" in
         apply)
-            COMPREPLY=( $(compgen -W "--dry-run --yes --only --skip --no-rollback --no-lock --lock --config" -- "$cur") )
+            COMPREPLY=( $(compgen -W "--dry-run --yes --quiet --json --only --skip --no-rollback --no-lock --lock --config" -- "$cur") )
             ;;
         status)
+            COMPREPLY=( $(compgen -W "--json --exit-on-drift --only --skip --config" -- "$cur") )
+            ;;
+        doctor)
             COMPREPLY=( $(compgen -W "--json --config" -- "$cur") )
             ;;
         import)
             COMPREPLY=( $(compgen -W "--output --only --aur-helper --node-manager" -- "$cur") )
+            ;;
+        rollback)
+            COMPREPLY=( $(compgen -W "--list --latest --id --yes" -- "$cur") )
             ;;
         completion)
             COMPREPLY=( $(compgen -W "bash zsh fish" -- "$cur") )
@@ -720,6 +863,7 @@ _bigkis() {
     'apply:converge the system'
     'status:show drift'
     'check:validate config'
+    'doctor:run preflight checks'
     'import:scan system into a starter system.toml'
     'explain:explain one package'
     'rollback:list or run a rollback script'
@@ -730,9 +874,11 @@ _bigkis() {
     return
   fi
   case "$words[2]" in
-    apply)      _arguments '--dry-run' '--yes' '--only=' '--skip=' '--no-rollback' '--no-lock' '--lock=' '--config=' ;;
-    status)     _arguments '--json' '--config=' ;;
+    apply)      _arguments '--dry-run' '--yes' '--quiet' '--json' '--only=' '--skip=' '--no-rollback' '--no-lock' '--lock=' '--config=' ;;
+    status)     _arguments '--json' '--exit-on-drift' '--only=' '--skip=' '--config=' ;;
+    doctor)     _arguments '--json' '--config=' ;;
     import)     _arguments '--output=' '--only=' '--aur-helper=' '--node-manager=' ;;
+    rollback)   _arguments '--list' '--latest' '--id=' '--yes' ;;
     completion) _values 'shell' bash zsh fish ;;
   esac
 }
@@ -743,6 +889,7 @@ const fishCompletionScript = `# bigkis fish completion
 complete -c bigkis -n '__fish_use_subcommand' -a apply      -d 'converge the system'
 complete -c bigkis -n '__fish_use_subcommand' -a status     -d 'show drift'
 complete -c bigkis -n '__fish_use_subcommand' -a check      -d 'validate config'
+complete -c bigkis -n '__fish_use_subcommand' -a doctor     -d 'run preflight checks'
 complete -c bigkis -n '__fish_use_subcommand' -a import     -d 'scan system into a starter system.toml'
 complete -c bigkis -n '__fish_use_subcommand' -a explain    -d 'explain one package'
 complete -c bigkis -n '__fish_use_subcommand' -a rollback   -d 'list or run a rollback script'
@@ -750,15 +897,28 @@ complete -c bigkis -n '__fish_use_subcommand' -a completion -d 'print shell comp
 
 complete -c bigkis -n '__fish_seen_subcommand_from apply'  -l dry-run     -d 'preview only'
 complete -c bigkis -n '__fish_seen_subcommand_from apply'  -l yes         -d 'skip confirmation'
+complete -c bigkis -n '__fish_seen_subcommand_from apply'  -l quiet       -d 'suppress info logs'
+complete -c bigkis -n '__fish_seen_subcommand_from apply'  -l json        -d 'emit JSON plan, do not apply'
 complete -c bigkis -n '__fish_seen_subcommand_from apply'  -l only        -d 'plugins to include'
 complete -c bigkis -n '__fish_seen_subcommand_from apply'  -l skip        -d 'plugins to skip'
 complete -c bigkis -n '__fish_seen_subcommand_from apply'  -l no-rollback -d 'do not write rollback'
 complete -c bigkis -n '__fish_seen_subcommand_from apply'  -l no-lock     -d 'do not write lockfile'
 complete -c bigkis -n '__fish_seen_subcommand_from apply'  -l lock        -d 'lockfile path'
 
-complete -c bigkis -n '__fish_seen_subcommand_from status' -l json        -d 'JSON output'
+complete -c bigkis -n '__fish_seen_subcommand_from status' -l json          -d 'JSON output'
+complete -c bigkis -n '__fish_seen_subcommand_from status' -l exit-on-drift -d 'exit 3 on drift'
+complete -c bigkis -n '__fish_seen_subcommand_from status' -l only          -d 'plugins to include'
+complete -c bigkis -n '__fish_seen_subcommand_from status' -l skip          -d 'plugins to skip'
+
+complete -c bigkis -n '__fish_seen_subcommand_from doctor' -l json          -d 'JSON output'
+
 complete -c bigkis -n '__fish_seen_subcommand_from import' -l output      -d 'write to file'
 complete -c bigkis -n '__fish_seen_subcommand_from import' -l only        -d 'plugins to include'
+
+complete -c bigkis -n '__fish_seen_subcommand_from rollback' -l list   -d 'list rollback scripts'
+complete -c bigkis -n '__fish_seen_subcommand_from rollback' -l latest -d 'run the most recent rollback'
+complete -c bigkis -n '__fish_seen_subcommand_from rollback' -l id     -d 'run a specific rollback by id'
+complete -c bigkis -n '__fish_seen_subcommand_from rollback' -l yes    -d 'skip confirmation'
 
 complete -c bigkis -n '__fish_seen_subcommand_from completion' -a 'bash zsh fish'
 `

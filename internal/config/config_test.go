@@ -325,6 +325,47 @@ packages = ["brightnessctl"]
 	}
 }
 
+// TestLoad_HostOverlayAppliesPruneOrphans guards against the regression where
+// applyHostOverlay merged aur_helper / node_manager but silently dropped
+// settings.prune_orphans.
+func TestLoad_HostOverlayAppliesPruneOrphans(t *testing.T) {
+	hostname, _ := os.Hostname()
+	if hostname == "" {
+		t.Skip("no hostname available; skipping")
+	}
+	path := writeTOML(t, `
+[settings]
+prune_orphans = "scoped"
+
+[hosts.`+hostname+`.settings]
+prune_orphans = "none"
+`)
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.Settings.PruneOrphans != PruneOrphansNone {
+		t.Errorf("prune_orphans = %q, want host overlay 'none'", cfg.Settings.PruneOrphans)
+	}
+}
+
+// TestResolvePath_ExplicitMissingErrors guards against fallthrough to the
+// default search path when a missing --config is supplied.
+func TestResolvePath_ExplicitMissingErrors(t *testing.T) {
+	t.Setenv("BIGKIS_CONFIG", "")
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	t.Setenv("HOME", t.TempDir())
+
+	missing := filepath.Join(t.TempDir(), "definitely-missing.toml")
+	_, err := Load(missing)
+	if err == nil {
+		t.Fatal("expected error when explicit --config is missing")
+	}
+	if !strings.Contains(err.Error(), missing) {
+		t.Errorf("error should mention the missing path; got %v", err)
+	}
+}
+
 func TestLoad_HostOverlayIgnoredOnOtherHosts(t *testing.T) {
 	path := writeTOML(t, `
 [pacman]

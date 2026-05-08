@@ -4,6 +4,7 @@ package aur
 
 import (
 	"fmt"
+	"os"
 	"strings"
 
 	"codeberg.org/gurg/bigkis/internal/config"
@@ -13,6 +14,13 @@ import (
 	"codeberg.org/gurg/bigkis/internal/state"
 	"codeberg.org/gurg/bigkis/internal/ui"
 )
+
+// geteuid returns the effective UID of the current process. It's a var so
+// tests can stub it without spinning up real privileged subprocesses.
+var geteuid = os.Geteuid
+
+// getenv mirrors os.Getenv via a var so tests can stub SUDO_USER lookups.
+var getenv = os.Getenv
 
 type AUR struct {
 	helper     string
@@ -33,6 +41,10 @@ func (a *AUR) Name() string { return config.PluginAUR }
 // on PATH. We need both pacman (to query foreign packages) and the user's
 // configured AUR helper. The helper is checked here instead of inside Apply
 // so status / dry-run surface a missing helper before the user is prompted.
+//
+// AUR helpers refuse to operate as root, so we also verify the apply will
+// have a non-root user to drop to: either we're running unprivileged, or we
+// were invoked under sudo and SUDO_USER is set to a non-root account.
 func (a *AUR) Available(cfg *config.Config) error {
 	if !runner.HasCommand("pacman") {
 		return fmt.Errorf("pacman not found on PATH (required to query foreign packages)")
@@ -44,7 +56,29 @@ func (a *AUR) Available(cfg *config.Config) error {
 	if !runner.HasCommand(helper) {
 		return fmt.Errorf("aur helper %q not found on PATH; install it or change settings.aur_helper", helper)
 	}
+	if _, err := resolveHelperUser(); err != nil {
+		return err
+	}
 	return nil
+}
+
+// resolveHelperUser returns the username the AUR helper should run as. When
+// bigkis is invoked under sudo we drop to $SUDO_USER; an unprivileged
+// invocation runs the helper as the current user (returning ""). Returning
+// an error means the helper has no safe user to run as (root with no
+// SUDO_USER, or SUDO_USER=root).
+func resolveHelperUser() (string, error) {
+	if geteuid() != 0 {
+		return "", nil
+	}
+	user := getenv("SUDO_USER")
+	if user == "" {
+		return "", fmt.Errorf("aur: refusing to run helper as root; re-invoke bigkis via sudo from a regular user account so $SUDO_USER is set")
+	}
+	if user == "root" {
+		return "", fmt.Errorf("aur: SUDO_USER=root is not a safe target for the AUR helper")
+	}
+	return user, nil
 }
 
 // Probe returns the foreign packages installed on the system. "Foreign" means
@@ -110,12 +144,18 @@ func (a *AUR) Apply(cfg *config.Config, st *state.State, report plugin.Report, r
 		a.helper = cfg.Settings.AURHelper
 	}
 
-	// AUR helpers must be invoked as a non-root user. We rely on the user
-	// running bigkis to be a sudoer; the helper itself elevates as needed.
+	// AUR helpers must be invoked as a non-root user. When bigkis itself is
+	// running under sudo, drop privileges to $SUDO_USER; the helper escalates
+	// for the package install steps via its own pkexec/sudo path. When
+	// running as a regular user we leave User empty (= current user).
+	helperUser, err := resolveHelperUser()
+	if err != nil {
+		return err
+	}
 	if len(d.Add) > 0 {
 		u.Step("aur: installing %d package(s) via %s", len(d.Add), a.helper)
 		args := append([]string{"-S", "--needed", "--noconfirm"}, d.Add...)
-		if _, err := r.Run(runner.Spec{Name: a.helper, Args: args}); err != nil {
+		if _, err := r.Run(runner.Spec{Name: a.helper, Args: args, User: helperUser}); err != nil {
 			return fmt.Errorf("%s -S: %w", a.helper, err)
 		}
 	}
@@ -123,7 +163,7 @@ func (a *AUR) Apply(cfg *config.Config, st *state.State, report plugin.Report, r
 	if len(d.Remove) > 0 {
 		u.Step("aur: removing %d package(s) via %s", len(d.Remove), a.helper)
 		args := append([]string{"-Rns", "--noconfirm"}, d.Remove...)
-		if _, err := r.Run(runner.Spec{Name: a.helper, Args: args}); err != nil {
+		if _, err := r.Run(runner.Spec{Name: a.helper, Args: args, User: helperUser}); err != nil {
 			return fmt.Errorf("%s -Rns: %w", a.helper, err)
 		}
 	}

@@ -65,3 +65,17 @@ func TestFakeRunner_DryRunStillRecordsViaHookOnRun(t *testing.T) {
 		t.Error("Sudo bit should be preserved")
 	}
 }
+
+// TestRun_NoPanicOnExecStartFailure exercises the nil-ProcessState guard:
+// when the command can't even start (missing binary), Run must surface the
+// error with a synthetic exit code instead of panicking on the nil deref.
+func TestRun_NoPanicOnExecStartFailure(t *testing.T) {
+	r := New(false)
+	res, err := r.Run(Spec{Name: "this-binary-definitely-does-not-exist-bigkis-test"})
+	if err == nil {
+		t.Fatal("expected error for missing binary, got nil")
+	}
+	if res.ExitCode != -1 {
+		t.Errorf("ExitCode = %d, want -1 for start failure", res.ExitCode)
+	}
+}

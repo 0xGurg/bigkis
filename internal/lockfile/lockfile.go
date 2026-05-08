@@ -49,6 +49,7 @@ func Write(path string, cfg *config.Config) error {
 	}
 	if cfg.IsEnabled(config.PluginFlatpak) {
 		writeFlatpak(&b, cfg.Flatpak.Packages)
+		writeFlatpakUsers(&b, cfg.Flatpak.UserPackages)
 	}
 	// node intentionally omitted from v1: per-manager versions and global
 	// install paths vary too much to make a useful lock for now.
@@ -113,6 +114,55 @@ func writeFlatpak(b *strings.Builder, packages []string) {
 	}
 }
 
+// writeFlatpakUsers emits a [flatpak.user.<user>.<pkg>] section per declared
+// per-user flatpak so the lockfile reflects everything the flatpak plugin
+// manages, not just system-wide installs. Versions are best-effort: when the
+// process can't query a user install (running as root without sudo to that
+// user) we still emit the package as a key with an empty body so it's
+// represented.
+func writeFlatpakUsers(b *strings.Builder, users map[string][]string) {
+	if !hasCommand("flatpak") {
+		return
+	}
+	if len(users) == 0 {
+		return
+	}
+	usernames := make([]string, 0, len(users))
+	for u := range users {
+		usernames = append(usernames, u)
+	}
+	sort.Strings(usernames)
+	for _, user := range usernames {
+		pkgs := append([]string(nil), users[user]...)
+		sort.Strings(pkgs)
+		for _, p := range pkgs {
+			commit, version := flatpakUserInfo(user, p)
+			fmt.Fprintf(b, "[flatpak.user.%s.%s]\n", quote(user), quote(p))
+			if version != "" {
+				fmt.Fprintf(b, "version = %q\n", version)
+			}
+			if commit != "" {
+				fmt.Fprintf(b, "commit  = %q\n", commit)
+			}
+			fmt.Fprintln(b)
+		}
+	}
+}
+
+// flatpakUserInfo asks for `flatpak info` of a per-user install. We try the
+// `sudo -u <user> flatpak --user info <pkg>` form so we get the right
+// install regardless of who's running bigkis. If sudo or the user lookup
+// fails, we fall back to plain `flatpak info` (which only sees system).
+func flatpakUserInfo(user, pkg string) (commit, version string) {
+	if hasCommand("sudo") {
+		out, err := exec.Command("sudo", "-u", user, "flatpak", "--user", "info", pkg).Output()
+		if err == nil {
+			return parseFlatpakInfo(string(out))
+		}
+	}
+	return flatpakInfo(pkg)
+}
+
 func pacmanVersion(pkg string) (string, bool) {
 	out, err := exec.Command("pacman", "-Qi", pkg).Output()
 	if err != nil {
@@ -134,7 +184,11 @@ func flatpakInfo(pkg string) (commit, version string) {
 	if err != nil {
 		return "", ""
 	}
-	for _, line := range strings.Split(string(out), "\n") {
+	return parseFlatpakInfo(string(out))
+}
+
+func parseFlatpakInfo(out string) (commit, version string) {
+	for _, line := range strings.Split(out, "\n") {
 		line = strings.TrimSpace(line)
 		switch {
 		case strings.HasPrefix(line, "Version:"):

@@ -1,7 +1,9 @@
 package lockfile
 
 import (
+	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"codeberg.org/gurg/bigkis/internal/config"
@@ -49,5 +51,50 @@ func TestWrite_EmptyConfigStillWritesHeader(t *testing.T) {
 	cfg := &config.Config{}
 	if err := Write(path, cfg); err != nil {
 		t.Fatalf("Write: %v", err)
+	}
+}
+
+func TestParseFlatpakInfo_VersionAndCommit(t *testing.T) {
+	out := `
+Name: org.mozilla.firefox
+Version: 124.0
+Commit: deadbeefcafe
+`
+	commit, version := parseFlatpakInfo(out)
+	if version != "124.0" {
+		t.Errorf("version = %q", version)
+	}
+	if commit != "deadbeefcafe" {
+		t.Errorf("commit = %q", commit)
+	}
+}
+
+// TestWrite_RepresentsUserPackages exercises the flatpak.user_packages path.
+// flatpak isn't on the test host, so per-user info lookups will fail, but we
+// still expect the section header so managed user packages aren't invisible
+// in the lockfile.
+func TestWrite_RepresentsUserPackages(t *testing.T) {
+	if !hasCommand("flatpak") {
+		t.Skip("flatpak not on PATH; the user-packages emitter early-returns")
+	}
+	dir := t.TempDir()
+	path := filepath.Join(dir, "bigkis.lock")
+	cfg := &config.Config{
+		Settings: config.Settings{Enabled: []string{config.PluginFlatpak}},
+		Flatpak: config.Flatpak{
+			UserPackages: map[string][]string{
+				"alice": {"com.example.App"},
+			},
+		},
+	}
+	if err := Write(path, cfg); err != nil {
+		t.Fatalf("Write: %v", err)
+	}
+	body, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(body), "[flatpak.user.alice.") {
+		t.Errorf("user section missing:\n%s", body)
 	}
 }
