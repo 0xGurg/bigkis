@@ -54,20 +54,17 @@ jobs:
         working-directory: dist
         run: sha256sum bigkis-linux-amd64 bigkis-linux-arm64 > checksums.txt
 
-      # Extract the section of CHANGELOG.md matching this tag and write it to
-      # a file. We do not feed this into forgejo-release@v2's release-notes
-      # input — multi-line values trip up that action's quoted-heredoc
-      # substitution. Instead the "set release body" step below patches the
-      # body via the Codeberg API after publish, which is robust against any
-      # markdown content.
+      # Extract the section of CHANGELOG.md matching this tag and upload it
+      # as a release asset. Keeping the notes as an asset avoids
+      # forgejo-release@v2's fragile release-notes input path while still
+      # putting the changelog on the Codeberg release instead of the wiki.
       - name: extract release notes
         run: |
           tag="${GITHUB_REF_NAME}"
-          file="release-notes.md"
+          file="dist/release-notes.md"
           if [ -f CHANGELOG.md ]; then
             awk -v tag="$tag" '
               BEGIN { found = 0 }
-              # Match "## v0.4.1" or "## v0.4.1 - ..." but not "## v0.4.10".
               $0 ~ "^## "tag"([[:space:]]|$)" { found = 1; next }
               /^## v[0-9]/ && found { exit }
               found { print }
@@ -116,24 +113,3 @@ jobs:
           title: ${{ github.ref_name }}
           token: ${{ secrets.GITHUB_TOKEN }}
           override: true
-
-      # Patch the release body via the Codeberg API. The action's own
-      # release-notes input feeds the value through a quoted heredoc inside
-      # its bash and is fragile for multi-paragraph markdown; the API
-      # accepts arbitrary content as a JSON string, which is much safer.
-      #
-      # All python invocations here are one-liners on purpose: a multi-line
-      # `python3 -c` inside a YAML `run: |` block easily breaks the literal
-      # scalar's indentation, which causes Forgejo Actions to silently fail
-      # to register the workflow at all.
-      - name: set release body from changelog
-        env:
-          TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          REPO: ${{ github.repository }}
-          TAG: ${{ github.ref_name }}
-        run: |
-          set -eu
-          release_id=$(curl -fsSL -H "Authorization: token $TOKEN" "https://codeberg.org/api/v1/repos/$REPO/releases/tags/$TAG" | python3 -c 'import json,sys; print(json.load(sys.stdin)["id"])')
-          payload=$(python3 -c 'import json; print(json.dumps({"body": open("release-notes.md").read()}))')
-          curl -fsSL -X PATCH -H "Authorization: token $TOKEN" -H "Content-Type: application/json" -d "$payload" "https://codeberg.org/api/v1/repos/$REPO/releases/$release_id" > /dev/null
-          echo "release body for $TAG updated"

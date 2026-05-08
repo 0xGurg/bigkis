@@ -5,12 +5,12 @@ extracts the section matching each tag and uses it as the body of the
 corresponding [Codeberg release](https://codeberg.org/gurg/bigkis/releases),
 so the Codeberg releases page is the canonical place to read what changed.
 
-## v0.4.3
+## v0.4.4
 
 Small follow-up to v0.4.0. No code behavior changes; this is CI, release
-plumbing, and docs only. (v0.4.1 and v0.4.2 were burned during
+plumbing, and docs only. (v0.4.1, v0.4.2, and v0.4.3 were burned during
 release-engineering iteration on the workflow that attaches release notes;
-the changes that would have shipped there are folded into v0.4.3.)
+the changes that would have shipped there are folded into v0.4.4.)
 
 ### CI
 
@@ -23,11 +23,10 @@ the changes that would have shipped there are folded into v0.4.3.)
 
 ### Release plumbing
 
-- Release notes now live in this `CHANGELOG.md` at the repo root and are
-  attached as the body of each Codeberg release by the release workflow,
-  via a post-publish API PATCH (the action's own `release-notes` input
-  feeds through a fragile bash heredoc that doesn't survive multi-paragraph
-  markdown). Replaces the previous `wiki/Changelog.md` page.
+- Release notes now live in this `CHANGELOG.md` at the repo root. The
+  release workflow extracts the matching section and uploads it as
+  `release-notes.md` on the Codeberg release, replacing the previous
+  `wiki/Changelog.md` page.
 
 ### Docs
 
