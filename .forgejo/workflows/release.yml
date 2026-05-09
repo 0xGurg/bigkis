@@ -1,5 +1,9 @@
 name: release
 
+# Policy: version tags should be created only after the release commit is on
+# main (typically via an approved, merged PR). This workflow does not enforce
+# that; it runs whenever a v* tag is pushed.
+#
 # Triggers when a tag like v0.1.0 is pushed. Builds static linux/amd64 and
 # linux/arm64 binaries, generates checksums.txt, and publishes them as
 # Codeberg release assets. install.sh is what consumes this layout.
