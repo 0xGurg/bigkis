@@ -92,6 +92,7 @@ func applyCommand() *cli.Command {
 			&cli.StringFlag{Name: "lock", Usage: "path to write bigkis.lock (default: next to config)"},
 			&cli.StringSliceFlag{Name: "only", Usage: "only run these plugins (comma-separated)"},
 			&cli.StringSliceFlag{Name: "skip", Usage: "skip these plugins (comma-separated)"},
+			&cli.BoolFlag{Name: "no-upgrade", Usage: "skip system package upgrades (only install/remove to match the declaration)"},
 		},
 		Action: runApply,
 	}
@@ -450,11 +451,25 @@ func runApply(c *cli.Context) error {
 		return err
 	}
 
+	// Plugins that failed Available during planning were already warned;
+	// omit them from the upgrade loop so we don't repeat the same warning.
+	upgradePlugins := pluginsForUpgrade(plugins, plan.unavailable)
+
+	noUpgrade := c.Bool("no-upgrade")
+	rPreview := runner.New(true)
 	if dryRun {
-		if !plan.overall {
-			u.Info("system matches declaration; nothing to do")
+		if !noUpgrade {
+			u.Info("dry-run: upgrades (no changes applied)")
+			if err := runUpgrades(upgradePlugins, cfg, st, rPreview, u); err != nil {
+				return err
+			}
+		}
+		if plan.overall {
+			u.Info("dry-run: install/remove preview above; not applying")
+		} else if noUpgrade {
+			u.Info("system matches declaration; --no-upgrade (skipped upgrade preview); nothing to do")
 		} else {
-			u.Info("dry-run: not applying")
+			u.Info("system matches declaration; upgrade preview above; no install/remove needed")
 		}
 		return nil
 	}
@@ -466,19 +481,50 @@ func runApply(c *cli.Context) error {
 	// step a clean "everything is already installed" first run leaves
 	// lastApplied empty and removals are silently inhibited forever.
 	if !plan.overall {
-		u.Info("system matches declaration; nothing to do")
-		if err := persistInSync(plan.insync, cfg, st, statePath, u); err != nil {
-			return err
+		if noUpgrade {
+			u.Info("system matches declaration; --no-upgrade; nothing to do")
+			if err := persistInSync(plan.insync, cfg, st, statePath, u); err != nil {
+				return err
+			}
+			return nil
 		}
-		return nil
+		u.Info("system matches declaration; running upgrades only")
 	}
 
-	if !u.Confirm("proceed with these changes?") {
+	prompt := applyConfirmPrompt(plan.overall, !noUpgrade)
+	if !u.Confirm(prompt) {
 		u.Info("aborted by user")
 		return cli.Exit("aborted by user", ExitUserCancelled)
 	}
 
 	r := runner.New(false)
+	if !noUpgrade {
+		u.Info("upgrading packages")
+		if err := runUpgrades(upgradePlugins, cfg, st, r, u); err != nil {
+			return err
+		}
+	}
+
+	if !plan.overall {
+		if err := persistInSync(plan.insync, cfg, st, statePath, u); err != nil {
+			return err
+		}
+		u.Dim("state saved to %s", statePath)
+		if !c.Bool("no-lock") {
+			lockPath := c.String("lock")
+			if lockPath == "" {
+				lockPath = lockfile.DefaultPath(cfg.Path)
+			}
+			if err := lockfile.Write(lockPath, cfg); err != nil {
+				u.Warn("could not write lockfile: %v", err)
+			} else {
+				u.Dim("lockfile: %s", lockPath)
+			}
+		}
+		u.Info("done")
+		return nil
+	}
+
 	u.Info("applying")
 	applied, applyErr := applyStages(plan.stages, cfg, st, statePath, r, u)
 
@@ -623,6 +669,9 @@ func persistInSync(plugins []plugin.Plugin, cfg *config.Config, st *state.State,
 // shape as `status --json` plus an explicit dryRun flag. Combine with
 // --no-rollback / --no-lock to script around bigkis.
 //
+// Pending package upgrades are not included (querying them is expensive and
+// out of scope); use `apply --dry-run` for upgrade command lines.
+//
 // Exit codes mirror status --exit-on-drift: drift produces ExitDrift (3) so
 // scripts can branch on "would-have-applied" without parsing JSON. The wiki
 // has documented this for a while; older builds always returned 0.
@@ -728,13 +777,69 @@ func bootstrapTo(c *cli.Context, logTo *os.File) (*config.Config, *state.State, 
 		}
 	}
 
-	reg := plugin.NewRegistry()
-	reg.Register(pacman.New())
-	reg.Register(aur.New())
-	reg.Register(flatpak.New())
-	reg.Register(node.New())
+	var reg *plugin.Registry
+	if registryHook != nil {
+		reg = registryHook()
+	} else {
+		reg = plugin.NewRegistry()
+		reg.Register(pacman.New())
+		reg.Register(aur.New())
+		reg.Register(flatpak.New())
+		reg.Register(node.New())
+	}
 
 	return cfg, st, reg, u, nil
+}
+
+// registryHook is set by tests to inject a custom plugin registry.
+var registryHook func() *plugin.Registry
+
+func applyConfirmPrompt(hasInstallRemove, willUpgrade bool) string {
+	var parts []string
+	if willUpgrade {
+		parts = append(parts, "run system upgrades")
+	}
+	if hasInstallRemove {
+		parts = append(parts, "apply the planned install/remove changes")
+	}
+	if len(parts) == 0 {
+		return "proceed?"
+	}
+	return "proceed to " + strings.Join(parts, ", then ") + "?"
+}
+
+// pluginsForUpgrade filters `all` to plugins not listed in `unavailable`
+// (from planAll), preserving declaration order. Those plugins were already
+// skipped during planning with a warning.
+func pluginsForUpgrade(all []plugin.Plugin, unavailable []string) []plugin.Plugin {
+	if len(unavailable) == 0 {
+		return all
+	}
+	bad := toSet(unavailable)
+	out := make([]plugin.Plugin, 0, len(all))
+	for _, p := range all {
+		if _, skip := bad[p.Name()]; skip {
+			continue
+		}
+		out = append(out, p)
+	}
+	return out
+}
+
+// runUpgrades invokes Plugin.Upgrade for each plugin in order. Plugins that
+// were unavailable during planning should already be filtered out; we still
+// call Available as a cheap consistency check before Upgrade.
+func runUpgrades(plugins []plugin.Plugin, cfg *config.Config, st *state.State, r *runner.Runner, u *ui.UI) error {
+	for _, p := range plugins {
+		if err := p.Available(cfg); err != nil {
+			u.Warn("%s: unavailable (%v); skipping upgrade", p.Name(), err)
+			continue
+		}
+		if err := p.Upgrade(cfg, st, r, u); err != nil {
+			return fmt.Errorf("%s upgrade: %w", p.Name(), err)
+		}
+	}
+	return nil
 }
 
 // selectPlugins resolves the final ordered list of plugins, applying
@@ -834,7 +939,7 @@ _bigkis_complete() {
 
     case "${words[1]}" in
         apply)
-            COMPREPLY=( $(compgen -W "--dry-run --yes --quiet --json --only --skip --no-rollback --no-lock --lock --config" -- "$cur") )
+            COMPREPLY=( $(compgen -W "--dry-run --yes --quiet --json --only --skip --no-upgrade --no-rollback --no-lock --lock --config" -- "$cur") )
             ;;
         status)
             COMPREPLY=( $(compgen -W "--json --exit-on-drift --only --skip --config" -- "$cur") )
@@ -874,7 +979,7 @@ _bigkis() {
     return
   fi
   case "$words[2]" in
-    apply)      _arguments '--dry-run' '--yes' '--quiet' '--json' '--only=' '--skip=' '--no-rollback' '--no-lock' '--lock=' '--config=' ;;
+    apply)      _arguments '--dry-run' '--yes' '--quiet' '--json' '--only=' '--skip=' '--no-upgrade' '--no-rollback' '--no-lock' '--lock=' '--config=' ;;
     status)     _arguments '--json' '--exit-on-drift' '--only=' '--skip=' '--config=' ;;
     doctor)     _arguments '--json' '--config=' ;;
     import)     _arguments '--output=' '--only=' '--aur-helper=' '--node-manager=' ;;
@@ -901,6 +1006,7 @@ complete -c bigkis -n '__fish_seen_subcommand_from apply'  -l quiet       -d 'su
 complete -c bigkis -n '__fish_seen_subcommand_from apply'  -l json        -d 'emit JSON plan, do not apply'
 complete -c bigkis -n '__fish_seen_subcommand_from apply'  -l only        -d 'plugins to include'
 complete -c bigkis -n '__fish_seen_subcommand_from apply'  -l skip        -d 'plugins to skip'
+complete -c bigkis -n '__fish_seen_subcommand_from apply'  -l no-upgrade  -d 'skip system upgrades'
 complete -c bigkis -n '__fish_seen_subcommand_from apply'  -l no-rollback -d 'do not write rollback'
 complete -c bigkis -n '__fish_seen_subcommand_from apply'  -l no-lock     -d 'do not write lockfile'
 complete -c bigkis -n '__fish_seen_subcommand_from apply'  -l lock        -d 'lockfile path'

@@ -270,3 +270,23 @@ func TestPruneOrphans_OtherExitCodePropagates(t *testing.T) {
 		t.Fatal("expected wrapped error")
 	}
 }
+
+func TestUpgrade_RunsSyu(t *testing.T) {
+	stubLookPath(t)
+	p := New()
+	f := runner.NewFake()
+	if err := p.Upgrade(&config.Config{}, &state.State{}, f.Runner, silentUI()); err != nil {
+		t.Fatalf("Upgrade: %v", err)
+	}
+	if len(f.Calls) != 1 {
+		t.Fatalf("expected 1 call, got %+v", f.Calls)
+	}
+	c := f.Calls[0]
+	if c.Name != "pacman" || !c.Sudo || c.User != "" {
+		t.Errorf("unexpected call: %+v", c)
+	}
+	want := []string{"-Syu", "--noconfirm"}
+	if !reflect.DeepEqual(c.Args, want) {
+		t.Errorf("argv = %v, want %v", c.Args, want)
+	}
+}

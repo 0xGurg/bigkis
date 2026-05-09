@@ -1,6 +1,8 @@
 package node
 
 import (
+	"bytes"
+	"io"
 	"reflect"
 	"sort"
 	"strings"
@@ -9,6 +11,7 @@ import (
 	"codeberg.org/gurg/bigkis/internal/config"
 	"codeberg.org/gurg/bigkis/internal/runner"
 	"codeberg.org/gurg/bigkis/internal/state"
+	"codeberg.org/gurg/bigkis/internal/ui"
 )
 
 func TestGroupDeclared_DefaultManager(t *testing.T) {
@@ -311,4 +314,80 @@ func TestPlan_FailsWhenPrevManagerMissing(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "pnpm") {
 		t.Fatalf("expected missing-pnpm error from prev-state, got %v", err)
 	}
+}
+
+func TestUpgrade_PerReferencedManager(t *testing.T) {
+	stubLookPath(t, map[string]bool{"npm": true, "pnpm": true, "yarn": true})
+	n := New()
+	rf := runner.NewFake()
+	cfg := &config.Config{
+		Settings: config.Settings{NodeManager: "npm"},
+		Node: config.Node{
+			Packages: []string{"typescript"},
+			Package: []config.NodePackage{
+				{Name: "eslint", Manager: "pnpm"},
+				{Name: "cowsay", Manager: "yarn"},
+			},
+		},
+	}
+	if err := n.Upgrade(cfg, &state.State{}, rf.Runner, silentNodeUI()); err != nil {
+		t.Fatalf("Upgrade: %v", err)
+	}
+	if len(rf.Calls) != 3 {
+		t.Fatalf("got %d calls: %+v", len(rf.Calls), rf.Calls)
+	}
+	want := []struct {
+		name string
+		args []string
+	}{
+		{"npm", []string{"update", "-g"}},
+		{"pnpm", []string{"update", "-g"}},
+		{"yarn", []string{"global", "upgrade"}},
+	}
+	for i, w := range want {
+		c := rf.Calls[i]
+		if c.Name != w.name || c.Sudo || c.User != "" {
+			t.Errorf("call %d: %+v", i, c)
+		}
+		if !reflect.DeepEqual(c.Args, w.args) {
+			t.Errorf("call %d argv = %v, want %v", i, c.Args, w.args)
+		}
+	}
+}
+
+func TestUpgrade_UsesPrevStateWhenDeclaredEmpty(t *testing.T) {
+	stubLookPath(t, map[string]bool{"pnpm": true, "npm": false})
+	st := &state.State{}
+	if err := st.Set("node", persisted{"pnpm": []string{"leftover"}}); err != nil {
+		t.Fatal(err)
+	}
+	n := New()
+	rf := runner.NewFake()
+	cfg := &config.Config{Settings: config.Settings{NodeManager: "npm"}}
+	if err := n.Upgrade(cfg, st, rf.Runner, silentNodeUI()); err != nil {
+		t.Fatalf("Upgrade: %v", err)
+	}
+	if len(rf.Calls) != 1 || rf.Calls[0].Name != "pnpm" {
+		t.Fatalf("calls: %+v", rf.Calls)
+	}
+	if !reflect.DeepEqual(rf.Calls[0].Args, []string{"update", "-g"}) {
+		t.Errorf("args = %v", rf.Calls[0].Args)
+	}
+}
+
+func TestUpgrade_SkipsWhenNoPackagesTracked(t *testing.T) {
+	stubLookPath(t, map[string]bool{"npm": true})
+	n := New()
+	rf := runner.NewFake()
+	cfg := &config.Config{Settings: config.Settings{NodeManager: "npm"}}
+	if err := n.Upgrade(cfg, &state.State{}, rf.Runner, silentNodeUI()); err != nil {
+		t.Fatal(err)
+	}
+	if len(rf.Calls) != 0 {
+		t.Errorf("expected no upgrade calls, got %+v", rf.Calls)
+	}
+}
+
+func silentNodeUI() *ui.UI {
+	return ui.New(io.Discard, &bytes.Buffer{}, false, true)
 }

@@ -90,6 +90,7 @@ func Run(cfg *config.Config, configErr error, env Env) Report {
 		"install flatpak, or remove flatpak from settings.enabled"))
 
 	if cfg != nil {
+		r.Checks = append(r.Checks, applyUpgradeNote())
 		r.Checks = append(r.Checks, aurHelperCheck(cfg, env))
 		r.Checks = append(r.Checks, aurUserCheck(cfg, env))
 		r.Checks = append(r.Checks, nodeManagerChecks(cfg, env)...)
@@ -106,6 +107,14 @@ func Run(cfg *config.Config, configErr error, env Env) Report {
 		}
 	}
 	return r
+}
+
+func applyUpgradeNote() Check {
+	return Check{
+		Name:    "apply:upgrade",
+		Status:  StatusOK,
+		Message: "apply runs system upgrades for enabled plugins before install/remove (pass --no-upgrade to skip)",
+	}
 }
 
 func configCheck(cfg *config.Config, err error) Check {

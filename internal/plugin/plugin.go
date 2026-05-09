@@ -9,7 +9,8 @@ import (
 )
 
 // Plugin is the contract every package source implements. The orchestrator
-// calls Available, Plan, then Apply, then PersistState in order.
+// calls Available and Plan, optionally Upgrade (before Apply, when upgrades
+// are enabled), then Apply and PersistState for plugins with pending work.
 type Plugin interface {
 	// Name is the stable plugin identifier (also used as the state key).
 	Name() string
@@ -35,6 +36,11 @@ type Plugin interface {
 	// plan is missing or no longer matches report, Apply returns an error
 	// rather than silently re-deriving work.
 	Apply(cfg *config.Config, st *state.State, report Report, r *runner.Runner, u *ui.UI) error
+
+	// Upgrade refreshes package databases and upgrades installed packages this
+	// plugin manages. Best-effort: a plugin without an upgrade concept may
+	// return nil. Called before Apply when the orchestrator is in upgrade mode.
+	Upgrade(cfg *config.Config, st *state.State, r *runner.Runner, u *ui.UI) error
 
 	// PersistState writes the now-current declared set into st under Name().
 	// Called only after a successful Apply.

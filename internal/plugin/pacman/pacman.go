@@ -69,6 +69,16 @@ func (p *Pacman) Plan(cfg *config.Config, st *state.State) (plugin.Report, error
 	return rep, nil
 }
 
+func (p *Pacman) Upgrade(cfg *config.Config, st *state.State, r *runner.Runner, u *ui.UI) error {
+	_ = cfg
+	_ = st
+	u.Step("pacman: upgrading native packages (sync + update)")
+	if _, err := r.Run(runner.Spec{Name: "pacman", Args: []string{"-Syu", "--noconfirm"}, Sudo: true}); err != nil {
+		return fmt.Errorf("pacman -Syu: %w", err)
+	}
+	return nil
+}
+
 func (p *Pacman) Apply(cfg *config.Config, st *state.State, report plugin.Report, r *runner.Runner, u *ui.UI) error {
 	if p.cachedDiff == nil {
 		return fmt.Errorf("pacman: Apply called before Plan")

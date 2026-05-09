@@ -145,6 +145,37 @@ func (f *Flatpak) Plan(cfg *config.Config, st *state.State) (plugin.Report, erro
 	return rep, nil
 }
 
+func (f *Flatpak) Upgrade(cfg *config.Config, st *state.State, r *runner.Runner, u *ui.UI) error {
+	_ = st
+	u.Step("flatpak: upgrading system installations")
+	if _, err := r.Run(runner.Spec{
+		Name: "flatpak",
+		Args: []string{"update", "--system", "--noninteractive", "--assumeyes"},
+		Sudo: true,
+	}); err != nil {
+		return fmt.Errorf("flatpak update --system: %w", err)
+	}
+	usernames := make([]string, 0, len(cfg.Flatpak.UserPackages))
+	for name := range cfg.Flatpak.UserPackages {
+		usernames = append(usernames, name)
+	}
+	sort.Strings(usernames)
+	for _, username := range usernames {
+		if !safeUsername.MatchString(username) {
+			return fmt.Errorf("flatpak.user_packages: refusing to update for user %q (must match %s)", username, safeUsername)
+		}
+		u.Step("flatpak: upgrading user %s installations", username)
+		if _, err := r.Run(runner.Spec{
+			Name: "flatpak",
+			Args: []string{"update", "--user", "--noninteractive", "--assumeyes"},
+			User: username,
+		}); err != nil {
+			return fmt.Errorf("flatpak update --user %s: %w", username, err)
+		}
+	}
+	return nil
+}
+
 func (f *Flatpak) Apply(cfg *config.Config, st *state.State, report plugin.Report, r *runner.Runner, u *ui.UI) error {
 	if f.cached == nil {
 		return fmt.Errorf("flatpak: Apply called before Plan")

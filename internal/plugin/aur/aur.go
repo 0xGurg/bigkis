@@ -127,6 +127,23 @@ func (a *AUR) Plan(cfg *config.Config, st *state.State) (plugin.Report, error) {
 	return rep, nil
 }
 
+func (a *AUR) Upgrade(cfg *config.Config, st *state.State, r *runner.Runner, u *ui.UI) error {
+	_ = st
+	helper := cfg.Settings.AURHelper
+	if helper == "" {
+		return fmt.Errorf("aur: settings.aur_helper is not set")
+	}
+	helperUser, err := resolveHelperUser()
+	if err != nil {
+		return err
+	}
+	u.Step("aur: upgrading AUR packages via %s", helper)
+	if _, err := r.Run(runner.Spec{Name: helper, Args: []string{"-Sua", "--noconfirm"}, User: helperUser}); err != nil {
+		return fmt.Errorf("%s -Sua: %w", helper, err)
+	}
+	return nil
+}
+
 func (a *AUR) Apply(cfg *config.Config, st *state.State, report plugin.Report, r *runner.Runner, u *ui.UI) error {
 	if a.cachedDiff == nil {
 		return fmt.Errorf("aur: Apply called before Plan")
