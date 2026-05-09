@@ -1,9 +1,10 @@
 # Changelog
 
-This file is the source of truth for release notes. The release workflow
-extracts the section matching each tag and uses it as the body of the
-corresponding [Codeberg release](https://codeberg.org/gurg/bigkis/releases),
-so the Codeberg releases page is the canonical place to read what changed.
+This file is the source of truth for release notes. When you push a `v*`
+tag, the release workflow extracts the matching section and uses it as the
+body of the corresponding
+[Codeberg release](https://codeberg.org/gurg/bigkis/releases), so the Codeberg
+releases page is the canonical place to read what changed.
 
 ## v0.5.0 - "upgrade on apply"
 
