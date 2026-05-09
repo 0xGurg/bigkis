@@ -20,6 +20,13 @@ import (
 
 const SchemaVersion = 1
 
+var (
+	lookPath      = exec.LookPath
+	commandOutput = func(name string, args ...string) ([]byte, error) {
+		return exec.Command(name, args...).Output()
+	}
+)
+
 // DefaultPath returns the path used when --lock is not given. It places
 // bigkis.lock next to the top-level config file.
 func DefaultPath(configPath string) string {
@@ -155,7 +162,7 @@ func writeFlatpakUsers(b *strings.Builder, users map[string][]string) {
 // fails, we fall back to plain `flatpak info` (which only sees system).
 func flatpakUserInfo(user, pkg string) (commit, version string) {
 	if hasCommand("sudo") {
-		out, err := exec.Command("sudo", "-u", user, "flatpak", "--user", "info", pkg).Output()
+		out, err := commandOutput("sudo", "-u", user, "flatpak", "--user", "info", pkg)
 		if err == nil {
 			return parseFlatpakInfo(string(out))
 		}
@@ -164,7 +171,7 @@ func flatpakUserInfo(user, pkg string) (commit, version string) {
 }
 
 func pacmanVersion(pkg string) (string, bool) {
-	out, err := exec.Command("pacman", "-Qi", pkg).Output()
+	out, err := commandOutput("pacman", "-Qi", pkg)
 	if err != nil {
 		return "", false
 	}
@@ -180,7 +187,7 @@ func pacmanVersion(pkg string) (string, bool) {
 }
 
 func flatpakInfo(pkg string) (commit, version string) {
-	out, err := exec.Command("flatpak", "info", pkg).Output()
+	out, err := commandOutput("flatpak", "info", pkg)
 	if err != nil {
 		return "", ""
 	}
@@ -201,7 +208,7 @@ func parseFlatpakInfo(out string) (commit, version string) {
 }
 
 func hasCommand(name string) bool {
-	_, err := exec.LookPath(name)
+	_, err := lookPath(name)
 	return err == nil
 }
 

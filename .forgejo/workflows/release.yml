@@ -1,16 +1,8 @@
 name: release
 
-# Two ways this workflow ships a release:
-#
-# 1. CHANGELOG-driven (PR merge → release):
-#    On every push to `main`, parse the topmost `## vX.Y.Z` heading from
-#    CHANGELOG.md. If that version has no remote tag yet, the workflow
-#    creates and pushes the tag, then continues with build + publish.
-#    PRs that don't bump CHANGELOG.md just land on main and skip release.
-#
-# 2. Manual tag (legacy / hotfix):
-#    Pushing a `v*` tag directly still triggers a build + publish using
-#    that exact tag name.
+# Releases are cut by pushing an annotated version tag (e.g. v0.5.1). This
+# workflow builds static linux/amd64 and linux/arm64 binaries, checksums them,
+# optionally minisigns checksums.txt, and publishes Codeberg release assets.
 #
 # Required secret: GITHUB_TOKEN is auto-provided by Forgejo Actions and has
 # enough scope on the current repo to create releases. If your instance
@@ -20,7 +12,6 @@ name: release
 
 on:
   push:
-    branches: [main]
     tags:
       - "v*"
 
@@ -30,121 +21,48 @@ jobs:
     steps:
       - name: checkout
         uses: https://code.forgejo.org/actions/checkout@v4
-        with:
-          # Need full history so we can push back a tag from main.
-          fetch-depth: 0
-
-      # Resolve the version we are about to release.
-      #
-      # On a tag push, we use $GITHUB_REF_NAME unchanged.
-      # On a push to main, we read the top "## vX.Y.Z" line from CHANGELOG.md
-      # and check whether that tag already exists on the remote. If it does
-      # (or the changelog top line isn't a version), we exit cleanly: this
-      # main push is just a non-release commit.
-      #
-      # When the tag does not yet exist, we create and push it from this
-      # exact main commit; the tag push itself will not re-trigger this
-      # workflow run (it will trigger a separate run, but by then the tag
-      # already exists, so the resolved-version step in *that* run becomes
-      # the standard tag path and proceeds with the same build).
-      - name: resolve release version
-        id: resolve
-        run: |
-          set -eu
-          ref_type="${GITHUB_REF_TYPE:-branch}"
-          ref_name="${GITHUB_REF_NAME:-}"
-          if [ "$ref_type" = "tag" ]; then
-            echo "trigger=tag" >> "$GITHUB_OUTPUT"
-            echo "version=${ref_name}" >> "$GITHUB_OUTPUT"
-            echo "skip=false" >> "$GITHUB_OUTPUT"
-            exit 0
-          fi
-          version=$(awk '/^## v[0-9]+\.[0-9]+\.[0-9]+/ { sub(/^## /, "", $0); split($0, a, /[ \t-]/); print a[1]; exit }' CHANGELOG.md || true)
-          if [ -z "${version:-}" ]; then
-            echo "no version heading at top of CHANGELOG.md; nothing to release"
-            echo "skip=true" >> "$GITHUB_OUTPUT"
-            exit 0
-          fi
-          if git ls-remote --tags origin "refs/tags/${version}" | grep -q "refs/tags/${version}$"; then
-            echo "${version} already tagged on origin; skipping release"
-            echo "skip=true" >> "$GITHUB_OUTPUT"
-            exit 0
-          fi
-          echo "trigger=main-push" >> "$GITHUB_OUTPUT"
-          echo "version=${version}" >> "$GITHUB_OUTPUT"
-          echo "skip=false" >> "$GITHUB_OUTPUT"
-
-      - name: create and push tag
-        if: steps.resolve.outputs.skip == 'false' && steps.resolve.outputs.trigger == 'main-push'
-        env:
-          TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          set -eu
-          version="${{ steps.resolve.outputs.version }}"
-          git config user.name  "bigkis-release-bot"
-          git config user.email "bigkis-release-bot@users.noreply.codeberg.org"
-          git tag -a "${version}" -m "${version}"
-          # Push tag using the auto-provided token. The remote URL needs
-          # the token embedded so the push is authenticated.
-          remote_url=$(git config --get remote.origin.url)
-          case "$remote_url" in
-            https://*)
-              auth_url=$(printf '%s' "$remote_url" | sed "s#https://#https://x-access-token:${TOKEN}@#")
-              git push "$auth_url" "${version}"
-              ;;
-            *)
-              # SSH or other; fall back to the configured remote.
-              git push origin "${version}"
-              ;;
-          esac
 
       - name: setup go
-        if: steps.resolve.outputs.skip == 'false'
         uses: https://code.forgejo.org/actions/setup-go@v5
         with:
           go-version: "1.26"
 
       - name: prepare dist directory
-        if: steps.resolve.outputs.skip == 'false'
         run: mkdir -p dist
 
       - name: build linux/amd64
-        if: steps.resolve.outputs.skip == 'false'
         env:
           CGO_ENABLED: "0"
           GOOS: linux
           GOARCH: amd64
-          VERSION: ${{ steps.resolve.outputs.version }}
+          VERSION: ${{ github.ref_name }}
         run: |
           go build -trimpath \
             -ldflags "-s -w -X main.version=${VERSION}" \
             -o dist/bigkis-linux-amd64 ./cmd/bigkis
 
       - name: build linux/arm64
-        if: steps.resolve.outputs.skip == 'false'
         env:
           CGO_ENABLED: "0"
           GOOS: linux
           GOARCH: arm64
-          VERSION: ${{ steps.resolve.outputs.version }}
+          VERSION: ${{ github.ref_name }}
         run: |
           go build -trimpath \
             -ldflags "-s -w -X main.version=${VERSION}" \
             -o dist/bigkis-linux-arm64 ./cmd/bigkis
 
       - name: checksums
-        if: steps.resolve.outputs.skip == 'false'
         working-directory: dist
         run: sha256sum bigkis-linux-amd64 bigkis-linux-arm64 > checksums.txt
 
-      # Extract the section of CHANGELOG.md matching this version and upload
+      # Extract the section of CHANGELOG.md matching this tag and upload
       # it as a release asset. Keeping the notes as an asset avoids
       # forgejo-release@v2's fragile release-notes input path while still
       # putting the changelog on the Codeberg release instead of the wiki.
       - name: extract release notes
-        if: steps.resolve.outputs.skip == 'false'
         env:
-          VERSION: ${{ steps.resolve.outputs.version }}
+          VERSION: ${{ github.ref_name }}
         run: |
           tag="${VERSION}"
           file="dist/release-notes.md"
@@ -167,17 +85,17 @@ jobs:
       # and MINISIGN_PASSWORD. Skipped silently when MINISIGN_PRIVATE_KEY is
       # not set so installs without signing keep working.
       - name: install minisign
-        if: steps.resolve.outputs.skip == 'false' && secrets.MINISIGN_PRIVATE_KEY != ''
+        if: secrets.MINISIGN_PRIVATE_KEY != ''
         run: |
           sudo apt-get update -y
           sudo apt-get install -y minisign
 
       - name: sign checksums.txt
-        if: steps.resolve.outputs.skip == 'false' && secrets.MINISIGN_PRIVATE_KEY != ''
+        if: secrets.MINISIGN_PRIVATE_KEY != ''
         env:
           MINISIGN_PRIVATE_KEY: ${{ secrets.MINISIGN_PRIVATE_KEY }}
           MINISIGN_PASSWORD: ${{ secrets.MINISIGN_PASSWORD }}
-          VERSION: ${{ steps.resolve.outputs.version }}
+          VERSION: ${{ github.ref_name }}
         working-directory: dist
         run: |
           umask 077
@@ -190,14 +108,38 @@ jobs:
           rm -f minisign.key
 
       - name: publish release
-        if: steps.resolve.outputs.skip == 'false'
         uses: https://code.forgejo.org/actions/forgejo-release@v2
         with:
           url: https://codeberg.org
           repo: ${{ github.repository }}
           direction: upload
           release-dir: dist
-          tag: ${{ steps.resolve.outputs.version }}
-          title: ${{ steps.resolve.outputs.version }}
+          tag: ${{ github.ref_name }}
+          title: ${{ github.ref_name }}
           token: ${{ secrets.GITHUB_TOKEN }}
           override: true
+
+      # Patch the release body via the Codeberg API. forgejo-release@v2's
+      # release-notes input feeds multi-line markdown through a quoted
+      # heredoc inside the action and is fragile (v0.4.1 and v0.5.0 both
+      # shipped with empty bodies under that path). The API accepts the
+      # body as a JSON string, which is robust against any markdown.
+      - name: set release body from changelog
+        env:
+          TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          VERSION: ${{ github.ref_name }}
+        run: |
+          set -eu
+          release_id=$(curl -fsSL \
+            -H "Authorization: token $TOKEN" \
+            "https://codeberg.org/api/v1/repos/$REPO/releases/tags/$VERSION" \
+            | python3 -c 'import json,sys; print(json.load(sys.stdin)["id"])')
+          payload=$(python3 -c 'import json; print(json.dumps({"body": open("dist/release-notes.md").read()}))')
+          curl -fsSL -X PATCH \
+            -H "Authorization: token $TOKEN" \
+            -H "Content-Type: application/json" \
+            -d "$payload" \
+            "https://codeberg.org/api/v1/repos/$REPO/releases/$release_id" \
+            > /dev/null
+          echo "release body for $VERSION updated"
