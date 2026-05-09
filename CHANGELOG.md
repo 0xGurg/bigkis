@@ -6,6 +6,20 @@ body of the corresponding
 [Codeberg release](https://codeberg.org/gurg/bigkis/releases), so the Codeberg
 releases page is the canonical place to read what changed.
 
+## v0.5.1
+
+Small follow-up to v0.5.0. No `bigkis` CLI behavior changes; this release is
+packaging and release automation only.
+
+### Release plumbing
+
+- The release workflow can now update the `bigkis-bin` AUR package
+  automatically after a successful tag-triggered release publish when the
+  `AUR_SSH_PRIVATE_KEY` secret is configured.
+- The AUR sync waits for the published `bigkis-linux-amd64` asset to become
+  reachable before regenerating `PKGBUILD` / `.SRCINFO` and pushing to the AUR,
+  so the package metadata tracks the actual published release asset checksums.
+
 ## v0.5.0 - "upgrade on apply"
 
 Decman-style **system upgrades** are now part of the default `apply` flow.
