@@ -28,6 +28,9 @@ type fakePlugin struct {
 	upgradeCalled int
 	upgradeErr    error
 	availableErr  error
+	planReport    plugin.Report
+	planErr       error
+	persistErr    error
 }
 
 func (p *fakePlugin) Name() string { return p.name }
@@ -39,6 +42,12 @@ func (p *fakePlugin) Upgrade(cfg *config.Config, st *state.State, r *runner.Runn
 	return p.upgradeErr
 }
 func (p *fakePlugin) Plan(cfg *config.Config, st *state.State) (plugin.Report, error) {
+	if p.planErr != nil {
+		return plugin.Report{}, p.planErr
+	}
+	if p.planReport.Plugin != "" || len(p.planReport.Operations) > 0 {
+		return p.planReport, nil
+	}
 	return plugin.Report{Plugin: p.name}, nil
 }
 func (p *fakePlugin) Apply(cfg *config.Config, st *state.State, report plugin.Report, r *runner.Runner, u *ui.UI) error {
@@ -46,6 +55,9 @@ func (p *fakePlugin) Apply(cfg *config.Config, st *state.State, report plugin.Re
 	return p.applyErr
 }
 func (p *fakePlugin) PersistState(cfg *config.Config, st *state.State) error {
+	if p.persistErr != nil {
+		return p.persistErr
+	}
 	return st.Set(p.name, p.stateValue)
 }
 
@@ -121,6 +133,26 @@ func TestApplyStages_MidLoopFailureKeepsSuccessfulCheckpoints(t *testing.T) {
 	}
 }
 
+func TestApplyStages_PersistStateFailureIsWrapped(t *testing.T) {
+	statePath := filepath.Join(t.TempDir(), "state.json")
+	cfg := &config.Config{}
+	st := &state.State{}
+	logUI := ui.New(io.Discard, &bytes.Buffer{}, false, true)
+	boom := errors.New("persist boom")
+	stages := []stage{
+		{Plugin: &fakePlugin{name: "pacman", persistErr: boom}, Report: plugin.Report{Plugin: "pacman"}},
+	}
+
+	applied, err := applyStages(stages, cfg, st, statePath, runner.NewFake().Runner, logUI)
+
+	if len(applied) != 0 {
+		t.Fatalf("applied = %+v, want none", applied)
+	}
+	if err == nil || !strings.Contains(err.Error(), "pacman persist state: persist boom") {
+		t.Fatalf("err = %v, want wrapped persist error", err)
+	}
+}
+
 func TestPluginsForUpgrade_FiltersUnavailablePreservesOrder(t *testing.T) {
 	p1 := &fakePlugin{name: "pacman"}
 	p2 := &fakePlugin{name: "aur"}
@@ -165,6 +197,22 @@ func TestRunUpgrades_OmitsPluginsMarkedUnavailableDuringPlan(t *testing.T) {
 	}
 }
 
+func TestRunUpgrades_SkipsCurrentlyUnavailablePlugin(t *testing.T) {
+	var out bytes.Buffer
+	logUI := ui.New(&out, &bytes.Buffer{}, false, true)
+	p := &fakePlugin{name: "pacman", availableErr: errors.New("missing pacman")}
+
+	if err := runUpgrades([]plugin.Plugin{p}, &config.Config{}, &state.State{}, runner.NewFake().Runner, logUI); err != nil {
+		t.Fatalf("runUpgrades: %v", err)
+	}
+	if p.upgradeCalled != 0 {
+		t.Fatalf("upgradeCalled = %d, want 0", p.upgradeCalled)
+	}
+	if !strings.Contains(out.String(), "pacman: unavailable") {
+		t.Fatalf("warning missing from %q", out.String())
+	}
+}
+
 func TestApplyConfirmPrompt_Wordings(t *testing.T) {
 	if g := applyConfirmPrompt(true, true); g == "" || !strings.Contains(g, "upgrades") {
 		t.Errorf("both: %q", g)
@@ -175,18 +223,165 @@ func TestApplyConfirmPrompt_Wordings(t *testing.T) {
 	if g := applyConfirmPrompt(false, true); !strings.Contains(g, "upgrades") || strings.Contains(g, "install/remove") {
 		t.Errorf("upgrades only: %q", g)
 	}
+	if g := applyConfirmPrompt(false, false); g != "proceed?" {
+		t.Errorf("nothing to do prompt: %q", g)
+	}
+}
+
+func TestSplitCSV_TrimsSplitsAndDropsEmpty(t *testing.T) {
+	got := splitCSV([]string{"pacman, aur", "", "flatpak", " node ,, "})
+	want := []string{"pacman", "aur", "flatpak", "node"}
+	if strings.Join(got, "|") != strings.Join(want, "|") {
+		t.Fatalf("splitCSV = %v, want %v", got, want)
+	}
+}
+
+func TestSelectPlugins_AppliesOnlySkipAndWarnings(t *testing.T) {
+	reg := plugin.NewRegistry()
+	reg.Register(&fakePlugin{name: "pacman"})
+	reg.Register(&fakePlugin{name: "aur"})
+	reg.Register(&fakePlugin{name: "flatpak"})
+	var out bytes.Buffer
+	logUI := ui.New(&out, &bytes.Buffer{}, false, true)
+
+	got := selectPlugins(
+		[]string{"pacman", "aur", "flatpak"},
+		[]string{"aur", "typo"},
+		[]string{"flatpak", "skip-typo"},
+		reg,
+		logUI,
+	)
+
+	if names := strings.Join(pluginNames(got), ","); names != "aur" {
+		t.Fatalf("selected = %s, want aur", names)
+	}
+	log := out.String()
+	for _, want := range []string{
+		`--only "typo"`,
+		`--skip "skip-typo"`,
+	} {
+		if !strings.Contains(log, want) {
+			t.Fatalf("warning %q missing from %q", want, log)
+		}
+	}
+
+	out.Reset()
+	if got := selectPlugins([]string{"missing"}, nil, nil, reg, logUI); len(got) != 0 {
+		t.Fatalf("unknown plugin selected: %v", pluginNames(got))
+	}
+	if !strings.Contains(out.String(), `plugin "missing" is enabled`) {
+		t.Fatalf("unknown plugin warning missing from %q", out.String())
+	}
+}
+
+func TestPrintReport_SortsAndFormatsOperations(t *testing.T) {
+	var out bytes.Buffer
+	logUI := ui.New(&out, &bytes.Buffer{}, false, true)
+	report := plugin.Report{Plugin: "test", Operations: []plugin.Operation{
+		{Kind: plugin.OpRemove, Target: "zeta"},
+		{Kind: plugin.OpAdd, Target: "beta", Detail: "system"},
+		{Kind: plugin.OpAdd, Target: "alpha"},
+	}}
+
+	printReport(logUI, report)
+
+	got := out.String()
+	want := "  + alpha\n  + beta (system)\n  - zeta\n"
+	if got != want {
+		t.Fatalf("report output = %q, want %q", got, want)
+	}
+}
+
+func TestRunUpgrades_WrapsUpgradeError(t *testing.T) {
+	cfg := &config.Config{}
+	st := &state.State{}
+	logUI := ui.New(io.Discard, &bytes.Buffer{}, false, true)
+	boom := errors.New("boom")
+	p := &fakePlugin{name: "pacman", upgradeErr: boom}
+
+	err := runUpgrades([]plugin.Plugin{p}, cfg, st, runner.NewFake().Runner, logUI)
+
+	if err == nil || !strings.Contains(err.Error(), "pacman upgrade: boom") {
+		t.Fatalf("err = %v, want wrapped upgrade error", err)
+	}
+}
+
+func TestPlanAll_RecordsReportsAndUnavailablePlugins(t *testing.T) {
+	cfg := &config.Config{}
+	st := &state.State{}
+	var out bytes.Buffer
+	logUI := ui.New(&out, &bytes.Buffer{}, false, true)
+	good := &fakePlugin{
+		name: "pacman",
+		planReport: plugin.Report{
+			Plugin:     "pacman",
+			Operations: []plugin.Operation{{Kind: plugin.OpAdd, Target: "git"}},
+		},
+	}
+	bad := &fakePlugin{name: "aur", availableErr: errors.New("missing helper")}
+
+	res, err := planAll(cfg, st, []plugin.Plugin{good, bad}, logUI)
+
+	if err != nil {
+		t.Fatalf("planAll: %v", err)
+	}
+	if len(res.stages) != 1 || res.stages[0].Plugin.Name() != "pacman" {
+		t.Fatalf("stages = %+v", res.stages)
+	}
+	if !res.overall {
+		t.Fatal("overall should report drift from good plugin operation")
+	}
+	if strings.Join(res.unavailable, ",") != "aur" {
+		t.Fatalf("unavailable = %v", res.unavailable)
+	}
+	if !strings.Contains(out.String(), "aur: unavailable") {
+		t.Fatalf("warning missing from %q", out.String())
+	}
+}
+
+func TestPlanAll_WrapsPlanError(t *testing.T) {
+	logUI := ui.New(io.Discard, &bytes.Buffer{}, false, true)
+	p := &fakePlugin{name: "pacman", planErr: errors.New("plan boom")}
+
+	_, err := planAll(&config.Config{}, &state.State{}, []plugin.Plugin{p}, logUI)
+
+	if err == nil || !strings.Contains(err.Error(), "pacman plan: plan boom") {
+		t.Fatalf("err = %v, want wrapped plan error", err)
+	}
+}
+
+func TestPersistInSync_WrapsPersistError(t *testing.T) {
+	logUI := ui.New(io.Discard, &bytes.Buffer{}, false, true)
+	p := &fakePlugin{name: "pacman", persistErr: errors.New("persist boom")}
+
+	err := persistInSync([]plugin.Plugin{p}, &config.Config{}, &state.State{}, filepath.Join(t.TempDir(), "state.json"), logUI)
+
+	if err == nil || !strings.Contains(err.Error(), "pacman persist state: persist boom") {
+		t.Fatalf("err = %v, want wrapped persist error", err)
+	}
 }
 
 func runTestApp(args []string) error {
+	return runTestAppWithCommands(args, applyCommand())
+}
+
+func runTestAppWithCommands(args []string, commands ...*cli.Command) error {
 	app := &cli.App{
 		Name: "bigkis",
 		Flags: []cli.Flag{
 			&cli.StringFlag{Name: "config", EnvVars: []string{"BIGKIS_CONFIG"}},
 		},
-		Commands: []*cli.Command{applyCommand()},
+		Commands: commands,
 	}
 	all := append([]string{"bigkis"}, args...)
 	return app.Run(all)
+}
+
+func suppressCLIExit(t *testing.T) {
+	t.Helper()
+	prev := cli.OsExiter
+	cli.OsExiter = func(int) {}
+	t.Cleanup(func() { cli.OsExiter = prev })
 }
 
 func TestRunApply_RunsUpgradesByDefault(t *testing.T) {
@@ -209,6 +404,61 @@ func TestRunApply_RunsUpgradesByDefault(t *testing.T) {
 	}
 	if fp.upgradeCalled != 1 {
 		t.Fatalf("expected 1 upgrade, got %d", fp.upgradeCalled)
+	}
+}
+
+func TestRunStatus_ExitOnDriftReturnsDriftCode(t *testing.T) {
+	suppressCLIExit(t)
+	dir := t.TempDir()
+	t.Setenv("XDG_STATE_HOME", filepath.Join(dir, "xdg-state"))
+	cfgPath := filepath.Join(dir, "system.toml")
+	if err := os.WriteFile(cfgPath, []byte("[settings]\nenabled = [\"pacman\"]\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	fp := &fakePlugin{
+		name: config.PluginPacman,
+		planReport: plugin.Report{
+			Plugin:     config.PluginPacman,
+			Operations: []plugin.Operation{{Kind: plugin.OpAdd, Target: "git"}},
+		},
+	}
+	prev := registryHook
+	registryHook = func() *plugin.Registry {
+		r := plugin.NewRegistry()
+		r.Register(fp)
+		return r
+	}
+	t.Cleanup(func() { registryHook = prev })
+
+	err := runTestAppWithCommands([]string{"--config", cfgPath, "status", "--exit-on-drift"}, statusCommand())
+
+	if err == nil {
+		t.Fatal("expected drift exit")
+	}
+	exit, ok := err.(cli.ExitCoder)
+	if !ok || exit.ExitCode() != ExitDrift {
+		t.Fatalf("err = %v, want drift exit code %d", err, ExitDrift)
+	}
+}
+
+func TestRunStatus_UnavailablePluginDoesNotReportDrift(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("XDG_STATE_HOME", filepath.Join(dir, "xdg-state"))
+	cfgPath := filepath.Join(dir, "system.toml")
+	if err := os.WriteFile(cfgPath, []byte("[settings]\nenabled = [\"pacman\"]\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	fp := &fakePlugin{name: config.PluginPacman, availableErr: errors.New("missing pacman")}
+	prev := registryHook
+	registryHook = func() *plugin.Registry {
+		r := plugin.NewRegistry()
+		r.Register(fp)
+		return r
+	}
+	t.Cleanup(func() { registryHook = prev })
+
+	if err := runTestAppWithCommands([]string{"--config", cfgPath, "status", "--exit-on-drift"}, statusCommand()); err != nil {
+		t.Fatalf("status should not exit drift when plugin is unavailable: %v", err)
 	}
 }
 

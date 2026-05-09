@@ -1,6 +1,7 @@
 package state
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -18,6 +19,35 @@ func TestLoad_MissingFileReturnsEmpty(t *testing.T) {
 	}
 	if s.LastApplied == nil {
 		t.Error("expected non-nil LastApplied map")
+	}
+}
+
+func TestLoad_InvalidJSONReturnsParseError(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "state.json")
+	if err := os.WriteFile(path, []byte("{"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err := Load(path)
+
+	if err == nil || !strings.Contains(err.Error(), "parse state") {
+		t.Fatalf("expected parse state error, got %v", err)
+	}
+}
+
+func TestLoad_NilLastAppliedBecomesMap(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "state.json")
+	if err := os.WriteFile(path, []byte(`{"schemaVersion":1}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	s, err := Load(path)
+
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if s.LastApplied == nil {
+		t.Fatal("LastApplied is nil")
 	}
 }
 
@@ -66,6 +96,38 @@ func TestSaveLoad_RoundTrip(t *testing.T) {
 	}
 	if !reflect.DeepEqual(fp.System, []string{"org.mozilla.firefox"}) {
 		t.Errorf("flatpak.system = %v", fp.System)
+	}
+}
+
+func TestSave_NilStateWritesEmptyState(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "state.json")
+
+	if err := Save(path, nil); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+	loaded, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if loaded.SchemaVersion != SchemaVersion || loaded.LastApplied == nil {
+		t.Fatalf("loaded state = %+v", loaded)
+	}
+}
+
+func TestGet_InvalidPluginJSONReturnsDecodeError(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "state.json")
+	if err := os.WriteFile(path, []byte(`{"schemaVersion":1,"lastApplied":{"pacman":{`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Load(path); err == nil {
+		t.Fatal("invalid top-level JSON should fail before Get")
+	}
+
+	s := &State{LastApplied: map[string]json.RawMessage{"pacman": []byte("{")}}
+	var v []string
+	found, err := s.Get("pacman", &v)
+	if !found || err == nil || !strings.Contains(err.Error(), "decode pacman state") {
+		t.Fatalf("found=%v err=%v, want decode error", found, err)
 	}
 }
 
@@ -193,5 +255,34 @@ func TestAtomicWrite_OverwriteIsAtomic(t *testing.T) {
 		if strings.Contains(e.Name(), ".tmp") {
 			t.Errorf("leftover tmp: %s", e.Name())
 		}
+	}
+}
+
+func TestDefaultPath_UsesXDGStateHomeForNonRoot(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root uses the system state path")
+	}
+	t.Setenv("XDG_STATE_HOME", "/tmp/state-home")
+
+	got := DefaultPath()
+	want := "/tmp/state-home/bigkis/state.json"
+
+	if got != want {
+		t.Fatalf("DefaultPath = %q, want %q", got, want)
+	}
+}
+
+func TestDefaultPath_FallsBackToHomeForNonRoot(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root uses the system state path")
+	}
+	t.Setenv("XDG_STATE_HOME", "")
+	t.Setenv("HOME", "/tmp/home")
+
+	got := DefaultPath()
+	want := "/tmp/home/.local/state/bigkis/state.json"
+
+	if got != want {
+		t.Fatalf("DefaultPath = %q, want %q", got, want)
 	}
 }

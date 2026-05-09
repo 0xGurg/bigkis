@@ -1,9 +1,11 @@
 package runner
 
 import (
+	"bytes"
 	"errors"
 	"fmt"
 	"reflect"
+	"strings"
 	"testing"
 )
 
@@ -63,6 +65,74 @@ func TestFakeRunner_DryRunStillRecordsViaHookOnRun(t *testing.T) {
 	}
 	if !f.Calls[0].Sudo {
 		t.Error("Sudo bit should be preserved")
+	}
+}
+
+func TestRun_DryRunPrintsFormattedCommand(t *testing.T) {
+	var out bytes.Buffer
+	r := &Runner{DryRun: true, Stdout: &out}
+
+	if _, err := r.Run(Spec{Name: "pacman", Args: []string{"-S", "git"}, Sudo: true}); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+
+	got := out.String()
+	if !strings.Contains(got, "[dry-run] sudo -E pacman -S git") {
+		t.Fatalf("dry-run output = %q", got)
+	}
+}
+
+func TestRun_HookStreamsOutputAndWrapsError(t *testing.T) {
+	var stdout, stderr bytes.Buffer
+	r := &Runner{Stdout: &stdout, Stderr: &stderr}
+	r.Hook = func(spec Spec) (string, string, int, error) {
+		return "out", "err", 9, errors.New("boom")
+	}
+
+	res, err := r.Run(Spec{Name: "tool"})
+
+	if err == nil || !strings.Contains(err.Error(), "tool: boom") {
+		t.Fatalf("err = %v, want wrapped hook error", err)
+	}
+	if res.ExitCode != 9 || res.Stdout != "out" || res.Stderr != "err" {
+		t.Fatalf("result = %+v", res)
+	}
+	if stdout.String() != "out" || stderr.String() != "err" {
+		t.Fatalf("streamed stdout=%q stderr=%q", stdout.String(), stderr.String())
+	}
+}
+
+func TestCapture_HookErrorIncludesStderr(t *testing.T) {
+	r := New(false)
+	r.Hook = func(spec Spec) (string, string, int, error) {
+		return "partial", "bad stderr\n", 2, errors.New("failed")
+	}
+
+	out, err := r.Capture("tool", "arg")
+
+	if out != "partial" {
+		t.Fatalf("out = %q", out)
+	}
+	if err == nil || !strings.Contains(err.Error(), "tool arg: failed: bad stderr") {
+		t.Fatalf("err = %v", err)
+	}
+}
+
+func TestHasCommandUsesLookPath(t *testing.T) {
+	prev := LookPath
+	t.Cleanup(func() { LookPath = prev })
+	LookPath = func(name string) (string, error) {
+		if name == "present" {
+			return "/bin/present", nil
+		}
+		return "", errors.New("missing")
+	}
+
+	if !HasCommand("present") {
+		t.Fatal("present command not found")
+	}
+	if HasCommand("missing") {
+		t.Fatal("missing command found")
 	}
 }
 
