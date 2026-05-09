@@ -9,6 +9,15 @@ name: release
 # does not auto-provide it, create a personal access token with
 # `write:repository` and add it as a secret named GITHUB_TOKEN (or change
 # the `token:` value below to point at a different secret name).
+#
+# Optional secret for automatic AUR updates after a successful tag-based
+# release publish:
+# - AUR_SSH_PRIVATE_KEY: private SSH key for an AUR account with push access
+#   to ssh://aur@aur.archlinux.org/bigkis-bin.git
+#
+# We update AUR only on tag-triggered runs (not the main-push bootstrap run)
+# so the changelog-driven path does not race itself when it creates a tag and
+# that tag immediately triggers a second workflow run.
 
 on:
   push:
@@ -143,3 +152,56 @@ jobs:
             "https://codeberg.org/api/v1/repos/$REPO/releases/$release_id" \
             > /dev/null
           echo "release body for $VERSION updated"
+
+      - name: wait for release asset availability
+        if: secrets.AUR_SSH_PRIVATE_KEY != ''
+        env:
+          VERSION: ${{ github.ref_name }}
+        run: |
+          set -eu
+          url="https://codeberg.org/gurg/bigkis/releases/download/${VERSION}/bigkis-linux-amd64"
+          i=0
+          until curl -IfsSL "$url" >/dev/null 2>&1; do
+            i=$((i + 1))
+            if [ "$i" -ge 30 ]; then
+              echo "release asset not reachable after publish: $url"
+              exit 1
+            fi
+            sleep 10
+          done
+
+      - name: setup AUR SSH credentials
+        if: secrets.AUR_SSH_PRIVATE_KEY != ''
+        env:
+          AUR_SSH_PRIVATE_KEY: ${{ secrets.AUR_SSH_PRIVATE_KEY }}
+        run: |
+          set -eu
+          umask 077
+          mkdir -p "$HOME/.ssh"
+          printf '%s\n' "$AUR_SSH_PRIVATE_KEY" > "$HOME/.ssh/id_aur"
+          chmod 600 "$HOME/.ssh/id_aur"
+          ssh-keyscan aur.archlinux.org >> "$HOME/.ssh/known_hosts"
+
+      - name: update bigkis-bin AUR package
+        if: secrets.AUR_SSH_PRIVATE_KEY != ''
+        env:
+          VERSION: ${{ github.ref_name }}
+          GIT_AUTHOR_NAME: bigkis-release-bot
+          GIT_AUTHOR_EMAIL: bigkis-release-bot@users.noreply.codeberg.org
+          GIT_COMMITTER_NAME: bigkis-release-bot
+          GIT_COMMITTER_EMAIL: bigkis-release-bot@users.noreply.codeberg.org
+        run: |
+          set -eu
+          export GIT_SSH_COMMAND="ssh -i $HOME/.ssh/id_aur -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes"
+          aur_dir="$(mktemp -d)"
+          trap 'rm -rf "$aur_dir"' EXIT INT TERM
+          git clone ssh://aur@aur.archlinux.org/bigkis-bin.git "$aur_dir"
+          ./scripts/update-aur-bigkis-bin.sh "$VERSION" "$aur_dir"
+          cd "$aur_dir"
+          if [ -z "$(git status --porcelain -- PKGBUILD .SRCINFO .gitignore LICENSE)" ]; then
+            echo "AUR package already up to date"
+            exit 0
+          fi
+          git add PKGBUILD .SRCINFO .gitignore LICENSE
+          git commit -m "update bigkis-bin to ${VERSION}"
+          git push origin master
