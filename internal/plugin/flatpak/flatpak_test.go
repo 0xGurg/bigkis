@@ -120,3 +120,54 @@ func TestApply_RejectsCallBeforePlan(t *testing.T) {
 		t.Errorf("expected before-Plan error, got %v", err)
 	}
 }
+
+func TestUpgrade_SystemAndDeclaredUsers(t *testing.T) {
+	stubLookPath(t)
+	f := New()
+	cfg := &config.Config{
+		Flatpak: config.Flatpak{
+			UserPackages: map[string][]string{
+				"bob":   {"org.bob.App"},
+				"alice": {"org.alice.App"},
+			},
+		},
+	}
+	rf := runner.NewFake()
+	if err := f.Upgrade(cfg, &state.State{}, rf.Runner, silentUI()); err != nil {
+		t.Fatalf("Upgrade: %v", err)
+	}
+	if len(rf.Calls) != 3 {
+		t.Fatalf("expected 3 calls, got %+v", rf.Calls)
+	}
+	if rf.Calls[0].Name != "flatpak" || !rf.Calls[0].Sudo {
+		t.Errorf("call 0: %+v", rf.Calls[0])
+	}
+	wantSys := []string{"update", "--system", "--noninteractive", "--assumeyes"}
+	if !reflect.DeepEqual(rf.Calls[0].Args, wantSys) {
+		t.Errorf("system argv = %v", rf.Calls[0].Args)
+	}
+	if rf.Calls[1].Name != "flatpak" || rf.Calls[1].Sudo || rf.Calls[1].User != "alice" {
+		t.Errorf("call 1: %+v", rf.Calls[1])
+	}
+	wantUser := []string{"update", "--user", "--noninteractive", "--assumeyes"}
+	if !reflect.DeepEqual(rf.Calls[1].Args, wantUser) {
+		t.Errorf("alice argv = %v", rf.Calls[1].Args)
+	}
+	if rf.Calls[2].User != "bob" {
+		t.Errorf("call 2 user = %q", rf.Calls[2].User)
+	}
+}
+
+func TestUpgrade_RejectsUnsafeUsername(t *testing.T) {
+	stubLookPath(t)
+	f := New()
+	cfg := &config.Config{
+		Flatpak: config.Flatpak{
+			UserPackages: map[string][]string{"user;drop": {"org.foo"}},
+		},
+	}
+	err := f.Upgrade(cfg, &state.State{}, runner.NewFake().Runner, silentUI())
+	if err == nil || !strings.Contains(err.Error(), "refusing") {
+		t.Errorf("expected unsafe username error, got %v", err)
+	}
+}

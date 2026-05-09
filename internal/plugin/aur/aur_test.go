@@ -247,3 +247,45 @@ func TestApply_KeepsCurrentUserWhenInvokedUnprivileged(t *testing.T) {
 		t.Errorf("expected helper to run as current user (User=\"\"), got %q", got)
 	}
 }
+
+func TestUpgrade_RunsSuaAsSudoUser(t *testing.T) {
+	stubLookPath(t, map[string]bool{"pacman": true, "yay": true})
+	stubProcessUser(t, 0, map[string]string{"SUDO_USER": "alice"})
+	a := New()
+	f := runner.NewFake()
+	cfg := &config.Config{Settings: config.Settings{AURHelper: "yay"}}
+	if err := a.Upgrade(cfg, &state.State{}, f.Runner, silentUI()); err != nil {
+		t.Fatalf("Upgrade: %v", err)
+	}
+	if len(f.Calls) != 1 {
+		t.Fatalf("calls: %+v", f.Calls)
+	}
+	c := f.Calls[0]
+	if c.Name != "yay" || c.Sudo {
+		t.Errorf("unexpected call: %+v", c)
+	}
+	if c.User != "alice" {
+		t.Errorf("User = %q, want alice", c.User)
+	}
+	want := []string{"-Sua", "--noconfirm"}
+	if !reflect.DeepEqual(c.Args, want) {
+		t.Errorf("args = %v", c.Args)
+	}
+}
+
+func TestUpgrade_AsCurrentUserWhenUnprivileged(t *testing.T) {
+	stubLookPath(t, map[string]bool{"pacman": true, "yay": true})
+	stubProcessUser(t, 1000, map[string]string{})
+	a := New()
+	f := runner.NewFake()
+	cfg := &config.Config{Settings: config.Settings{AURHelper: "yay"}}
+	if err := a.Upgrade(cfg, &state.State{}, f.Runner, silentUI()); err != nil {
+		t.Fatalf("Upgrade: %v", err)
+	}
+	if len(f.Calls) != 1 {
+		t.Fatalf("calls: %+v", f.Calls)
+	}
+	if f.Calls[0].User != "" {
+		t.Errorf("expected empty User, got %q", f.Calls[0].User)
+	}
+}

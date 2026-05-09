@@ -1,8 +1,16 @@
 name: release
 
-# Triggers when a tag like v0.1.0 is pushed. Builds static linux/amd64 and
-# linux/arm64 binaries, generates checksums.txt, and publishes them as
-# Codeberg release assets. install.sh is what consumes this layout.
+# Two ways this workflow ships a release:
+#
+# 1. CHANGELOG-driven (PR merge → release):
+#    On every push to `main`, parse the topmost `## vX.Y.Z` heading from
+#    CHANGELOG.md. If that version has no remote tag yet, the workflow
+#    creates and pushes the tag, then continues with build + publish.
+#    PRs that don't bump CHANGELOG.md just land on main and skip release.
+#
+# 2. Manual tag (legacy / hotfix):
+#    Pushing a `v*` tag directly still triggers a build + publish using
+#    that exact tag name.
 #
 # Required secret: GITHUB_TOKEN is auto-provided by Forgejo Actions and has
 # enough scope on the current repo to create releases. If your instance
@@ -12,6 +20,7 @@ name: release
 
 on:
   push:
+    branches: [main]
     tags:
       - "v*"
 
@@ -21,46 +30,123 @@ jobs:
     steps:
       - name: checkout
         uses: https://code.forgejo.org/actions/checkout@v4
+        with:
+          # Need full history so we can push back a tag from main.
+          fetch-depth: 0
+
+      # Resolve the version we are about to release.
+      #
+      # On a tag push, we use $GITHUB_REF_NAME unchanged.
+      # On a push to main, we read the top "## vX.Y.Z" line from CHANGELOG.md
+      # and check whether that tag already exists on the remote. If it does
+      # (or the changelog top line isn't a version), we exit cleanly: this
+      # main push is just a non-release commit.
+      #
+      # When the tag does not yet exist, we create and push it from this
+      # exact main commit; the tag push itself will not re-trigger this
+      # workflow run (it will trigger a separate run, but by then the tag
+      # already exists, so the resolved-version step in *that* run becomes
+      # the standard tag path and proceeds with the same build).
+      - name: resolve release version
+        id: resolve
+        run: |
+          set -eu
+          ref_type="${GITHUB_REF_TYPE:-branch}"
+          ref_name="${GITHUB_REF_NAME:-}"
+          if [ "$ref_type" = "tag" ]; then
+            echo "trigger=tag" >> "$GITHUB_OUTPUT"
+            echo "version=${ref_name}" >> "$GITHUB_OUTPUT"
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          version=$(awk '/^## v[0-9]+\.[0-9]+\.[0-9]+/ { sub(/^## /, "", $0); split($0, a, /[ \t-]/); print a[1]; exit }' CHANGELOG.md || true)
+          if [ -z "${version:-}" ]; then
+            echo "no version heading at top of CHANGELOG.md; nothing to release"
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          if git ls-remote --tags origin "refs/tags/${version}" | grep -q "refs/tags/${version}$"; then
+            echo "${version} already tagged on origin; skipping release"
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          echo "trigger=main-push" >> "$GITHUB_OUTPUT"
+          echo "version=${version}" >> "$GITHUB_OUTPUT"
+          echo "skip=false" >> "$GITHUB_OUTPUT"
+
+      - name: create and push tag
+        if: steps.resolve.outputs.skip == 'false' && steps.resolve.outputs.trigger == 'main-push'
+        env:
+          TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -eu
+          version="${{ steps.resolve.outputs.version }}"
+          git config user.name  "bigkis-release-bot"
+          git config user.email "bigkis-release-bot@users.noreply.codeberg.org"
+          git tag -a "${version}" -m "${version}"
+          # Push tag using the auto-provided token. The remote URL needs
+          # the token embedded so the push is authenticated.
+          remote_url=$(git config --get remote.origin.url)
+          case "$remote_url" in
+            https://*)
+              auth_url=$(printf '%s' "$remote_url" | sed "s#https://#https://x-access-token:${TOKEN}@#")
+              git push "$auth_url" "${version}"
+              ;;
+            *)
+              # SSH or other; fall back to the configured remote.
+              git push origin "${version}"
+              ;;
+          esac
 
       - name: setup go
+        if: steps.resolve.outputs.skip == 'false'
         uses: https://code.forgejo.org/actions/setup-go@v5
         with:
           go-version: "1.26"
 
       - name: prepare dist directory
+        if: steps.resolve.outputs.skip == 'false'
         run: mkdir -p dist
 
       - name: build linux/amd64
+        if: steps.resolve.outputs.skip == 'false'
         env:
           CGO_ENABLED: "0"
           GOOS: linux
           GOARCH: amd64
+          VERSION: ${{ steps.resolve.outputs.version }}
         run: |
           go build -trimpath \
-            -ldflags "-s -w -X main.version=${GITHUB_REF_NAME}" \
+            -ldflags "-s -w -X main.version=${VERSION}" \
             -o dist/bigkis-linux-amd64 ./cmd/bigkis
 
       - name: build linux/arm64
+        if: steps.resolve.outputs.skip == 'false'
         env:
           CGO_ENABLED: "0"
           GOOS: linux
           GOARCH: arm64
+          VERSION: ${{ steps.resolve.outputs.version }}
         run: |
           go build -trimpath \
-            -ldflags "-s -w -X main.version=${GITHUB_REF_NAME}" \
+            -ldflags "-s -w -X main.version=${VERSION}" \
             -o dist/bigkis-linux-arm64 ./cmd/bigkis
 
       - name: checksums
+        if: steps.resolve.outputs.skip == 'false'
         working-directory: dist
         run: sha256sum bigkis-linux-amd64 bigkis-linux-arm64 > checksums.txt
 
-      # Extract the section of CHANGELOG.md matching this tag and upload it
-      # as a release asset. Keeping the notes as an asset avoids
+      # Extract the section of CHANGELOG.md matching this version and upload
+      # it as a release asset. Keeping the notes as an asset avoids
       # forgejo-release@v2's fragile release-notes input path while still
       # putting the changelog on the Codeberg release instead of the wiki.
       - name: extract release notes
+        if: steps.resolve.outputs.skip == 'false'
+        env:
+          VERSION: ${{ steps.resolve.outputs.version }}
         run: |
-          tag="${GITHUB_REF_NAME}"
+          tag="${VERSION}"
           file="dist/release-notes.md"
           if [ -f CHANGELOG.md ]; then
             awk -v tag="$tag" '
@@ -81,16 +167,17 @@ jobs:
       # and MINISIGN_PASSWORD. Skipped silently when MINISIGN_PRIVATE_KEY is
       # not set so installs without signing keep working.
       - name: install minisign
-        if: ${{ secrets.MINISIGN_PRIVATE_KEY != '' }}
+        if: steps.resolve.outputs.skip == 'false' && secrets.MINISIGN_PRIVATE_KEY != ''
         run: |
           sudo apt-get update -y
           sudo apt-get install -y minisign
 
       - name: sign checksums.txt
-        if: ${{ secrets.MINISIGN_PRIVATE_KEY != '' }}
+        if: steps.resolve.outputs.skip == 'false' && secrets.MINISIGN_PRIVATE_KEY != ''
         env:
           MINISIGN_PRIVATE_KEY: ${{ secrets.MINISIGN_PRIVATE_KEY }}
           MINISIGN_PASSWORD: ${{ secrets.MINISIGN_PASSWORD }}
+          VERSION: ${{ steps.resolve.outputs.version }}
         working-directory: dist
         run: |
           umask 077
@@ -99,17 +186,18 @@ jobs:
           printf '%s\n' "$MINISIGN_PASSWORD" | minisign -S \
             -s minisign.key \
             -m checksums.txt \
-            -t "bigkis ${GITHUB_REF_NAME}"
+            -t "bigkis ${VERSION}"
           rm -f minisign.key
 
       - name: publish release
+        if: steps.resolve.outputs.skip == 'false'
         uses: https://code.forgejo.org/actions/forgejo-release@v2
         with:
           url: https://codeberg.org
           repo: ${{ github.repository }}
           direction: upload
           release-dir: dist
-          tag: ${{ github.ref_name }}
-          title: ${{ github.ref_name }}
+          tag: ${{ steps.resolve.outputs.version }}
+          title: ${{ steps.resolve.outputs.version }}
           token: ${{ secrets.GITHUB_TOKEN }}
           override: true

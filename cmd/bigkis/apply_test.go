@@ -4,8 +4,12 @@ import (
 	"bytes"
 	"errors"
 	"io"
+	"os"
 	"path/filepath"
+	"strings"
 	"testing"
+
+	"github.com/urfave/cli/v2"
 
 	"codeberg.org/gurg/bigkis/internal/config"
 	"codeberg.org/gurg/bigkis/internal/plugin"
@@ -15,16 +19,25 @@ import (
 )
 
 // fakePlugin is a Plugin used to drive applyStages from tests. It records
-// when Apply / PersistState are called and can fail on demand.
+// when Apply / PersistState / Upgrade are called and can fail on demand.
 type fakePlugin struct {
-	name        string
-	applyErr    error
-	stateValue  []string
-	appliedHere bool
+	name          string
+	applyErr      error
+	stateValue    []string
+	appliedHere   bool
+	upgradeCalled int
+	upgradeErr    error
+	availableErr  error
 }
 
-func (p *fakePlugin) Name() string                       { return p.name }
-func (p *fakePlugin) Available(cfg *config.Config) error { return nil }
+func (p *fakePlugin) Name() string { return p.name }
+func (p *fakePlugin) Available(cfg *config.Config) error {
+	return p.availableErr
+}
+func (p *fakePlugin) Upgrade(cfg *config.Config, st *state.State, r *runner.Runner, u *ui.UI) error {
+	p.upgradeCalled++
+	return p.upgradeErr
+}
 func (p *fakePlugin) Plan(cfg *config.Config, st *state.State) (plugin.Report, error) {
 	return plugin.Report{Plugin: p.name}, nil
 }
@@ -105,6 +118,120 @@ func TestApplyStages_MidLoopFailureKeepsSuccessfulCheckpoints(t *testing.T) {
 	var node []string
 	if found, _ := loaded.Get("node", &node); found {
 		t.Errorf("node should not be in state (never ran), got %v", node)
+	}
+}
+
+func TestPluginsForUpgrade_FiltersUnavailablePreservesOrder(t *testing.T) {
+	p1 := &fakePlugin{name: "pacman"}
+	p2 := &fakePlugin{name: "aur"}
+	p3 := &fakePlugin{name: "flatpak"}
+	all := []plugin.Plugin{p1, p2, p3}
+	got := pluginsForUpgrade(all, []string{"aur"})
+	if len(got) != 2 || got[0].Name() != "pacman" || got[1].Name() != "flatpak" {
+		t.Fatalf("got %+v", pluginNames(got))
+	}
+	if len(pluginsForUpgrade(all, nil)) != 3 {
+		t.Fatal("empty unavailable should return original slice")
+	}
+	if len(pluginsForUpgrade(all, []string{})) != 3 {
+		t.Fatal("empty unavailable slice should return original")
+	}
+}
+
+func pluginNames(ps []plugin.Plugin) []string {
+	var out []string
+	for _, p := range ps {
+		out = append(out, p.Name())
+	}
+	return out
+}
+
+func TestRunUpgrades_OmitsPluginsMarkedUnavailableDuringPlan(t *testing.T) {
+	cfg := &config.Config{}
+	st := &state.State{}
+	logUI := ui.New(io.Discard, &bytes.Buffer{}, false, true)
+	skip := errors.New("skipped at plan")
+	bad := &fakePlugin{name: "pacman", availableErr: skip}
+	good := &fakePlugin{name: "aur"}
+	filtered := pluginsForUpgrade([]plugin.Plugin{bad, good}, []string{"pacman"})
+	if err := runUpgrades(filtered, cfg, st, runner.NewFake().Runner, logUI); err != nil {
+		t.Fatal(err)
+	}
+	if bad.upgradeCalled != 0 {
+		t.Errorf("pacman Upgrade ran %d times, want 0", bad.upgradeCalled)
+	}
+	if good.upgradeCalled != 1 {
+		t.Errorf("aur Upgrade ran %d times, want 1", good.upgradeCalled)
+	}
+}
+
+func TestApplyConfirmPrompt_Wordings(t *testing.T) {
+	if g := applyConfirmPrompt(true, true); g == "" || !strings.Contains(g, "upgrades") {
+		t.Errorf("both: %q", g)
+	}
+	if g := applyConfirmPrompt(true, false); strings.Contains(g, "upgrades") {
+		t.Errorf("no upgrade flag: %q", g)
+	}
+	if g := applyConfirmPrompt(false, true); !strings.Contains(g, "upgrades") || strings.Contains(g, "install/remove") {
+		t.Errorf("upgrades only: %q", g)
+	}
+}
+
+func runTestApp(args []string) error {
+	app := &cli.App{
+		Name: "bigkis",
+		Flags: []cli.Flag{
+			&cli.StringFlag{Name: "config", EnvVars: []string{"BIGKIS_CONFIG"}},
+		},
+		Commands: []*cli.Command{applyCommand()},
+	}
+	all := append([]string{"bigkis"}, args...)
+	return app.Run(all)
+}
+
+func TestRunApply_RunsUpgradesByDefault(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("XDG_STATE_HOME", filepath.Join(dir, "xdg-state"))
+	cfgPath := filepath.Join(dir, "system.toml")
+	if err := os.WriteFile(cfgPath, []byte("[settings]\nenabled = [\"pacman\"]\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	fp := &fakePlugin{name: config.PluginPacman}
+	prev := registryHook
+	registryHook = func() *plugin.Registry {
+		r := plugin.NewRegistry()
+		r.Register(fp)
+		return r
+	}
+	t.Cleanup(func() { registryHook = prev })
+	if err := runTestApp([]string{"--config", cfgPath, "apply", "--yes"}); err != nil {
+		t.Fatal(err)
+	}
+	if fp.upgradeCalled != 1 {
+		t.Fatalf("expected 1 upgrade, got %d", fp.upgradeCalled)
+	}
+}
+
+func TestRunApply_NoUpgradeFlagSkipsUpgrade(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("XDG_STATE_HOME", filepath.Join(dir, "xdg-state"))
+	cfgPath := filepath.Join(dir, "system.toml")
+	if err := os.WriteFile(cfgPath, []byte("[settings]\nenabled = [\"pacman\"]\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	fp := &fakePlugin{name: config.PluginPacman}
+	prev := registryHook
+	registryHook = func() *plugin.Registry {
+		r := plugin.NewRegistry()
+		r.Register(fp)
+		return r
+	}
+	t.Cleanup(func() { registryHook = prev })
+	if err := runTestApp([]string{"--config", cfgPath, "apply", "--yes", "--no-upgrade"}); err != nil {
+		t.Fatal(err)
+	}
+	if fp.upgradeCalled != 0 {
+		t.Fatalf("expected no upgrade, got %d", fp.upgradeCalled)
 	}
 }
 

@@ -99,6 +99,47 @@ func (n *Node) Plan(cfg *config.Config, st *state.State) (plugin.Report, error) 
 	return rep, nil
 }
 
+func upgradeArgs(mgr string) []string {
+	switch mgr {
+	case mgrNPM:
+		return []string{"update", "-g"}
+	case mgrPNPM:
+		return []string{"update", "-g"}
+	case mgrYARN:
+		return []string{"global", "upgrade"}
+	default:
+		return nil
+	}
+}
+
+func (n *Node) Upgrade(cfg *config.Config, st *state.State, r *runner.Runner, u *ui.UI) error {
+	declaredByMgr := groupDeclared(cfg)
+	var prev persisted
+	if _, err := st.Get(n.Name(), &prev); err != nil {
+		return err
+	}
+	managers := allManagers(declaredByMgr, prev)
+	for _, m := range managers {
+		decl := declaredByMgr[m]
+		prevList := prev[m]
+		if len(decl) == 0 && len(prevList) == 0 {
+			continue
+		}
+		if !runner.HasCommand(m) {
+			return fmt.Errorf("node manager %q referenced by declared or previously-declared packages but not on PATH; install it or remove those packages", m)
+		}
+		args := upgradeArgs(m)
+		if len(args) == 0 {
+			continue
+		}
+		u.Step("node: upgrading global packages via %s", m)
+		if _, err := r.Run(runner.Spec{Name: m, Args: args}); err != nil {
+			return fmt.Errorf("%s upgrade: %w", m, err)
+		}
+	}
+	return nil
+}
+
 func (n *Node) Apply(cfg *config.Config, st *state.State, report plugin.Report, r *runner.Runner, u *ui.UI) error {
 	if n.cached == nil {
 		return fmt.Errorf("node: Apply called before Plan")

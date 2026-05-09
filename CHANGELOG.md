@@ -5,6 +5,45 @@ extracts the section matching each tag and uses it as the body of the
 corresponding [Codeberg release](https://codeberg.org/gurg/bigkis/releases),
 so the Codeberg releases page is the canonical place to read what changed.
 
+## v0.5.0 - "upgrade on apply"
+
+Decman-style **system upgrades** are now part of the default `apply` flow.
+`sudo bigkis apply` refreshes databases / upgrades packages for each enabled
+plugin **before** install/remove reconciliation, in `settings.enabled` order.
+
+### Behavior
+
+- **pacman**: `sudo pacman -Syu --noconfirm`
+- **aur**: `<aur_helper> -Sua --noconfirm` as `$SUDO_USER` when needed (pacman
+  already handled repo sync; AUR-only upgrade path)
+- **flatpak**: `flatpak update --system` and `flatpak update --user` for each
+  username declared under `[flatpak.user_packages]`
+- **node**: `npm update -g`, `pnpm update -g`, or `yarn global upgrade` for
+  each manager that has declared or previously recorded packages
+
+**`--no-upgrade`** on `apply` restores v0.4-style behavior (only bring the
+system to the declared set, no broad upgrades).
+
+**Dry-run** prints the same upgrade commands the real runner would execute.
+
+**`apply --json`** is unchanged: it remains a plan-only view of add/remove
+ops and does **not** list pending upgrades (expensive; out of scope).
+
+### Orchestration
+
+- Plugins skipped during planning (`Available` failure) are **not** passed to
+  the upgrade phase, so the same unavailable-plugin warning is not repeated.
+
+### Rollback
+
+Rollback scripts still cover **install/remove only**; upgrades are not
+recorded for automatic undo.
+
+### Doctor / completion
+
+- `bigkis doctor` includes an informational `apply:upgrade` check.
+- Shell completions list `--no-upgrade`.
+
 ## v0.4.4
 
 Small follow-up to v0.4.0. No code behavior changes; this is CI, release

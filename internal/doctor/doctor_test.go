@@ -87,6 +87,9 @@ func TestRun_HappyPath(t *testing.T) {
 	if !r.OK {
 		t.Fatalf("expected OK report, got %+v", r)
 	}
+	if c, ok := findCheck(r, "apply:upgrade"); !ok || c.Status != StatusOK {
+		t.Fatalf("expected apply:upgrade ok check, got %+v", c)
+	}
 }
 
 func TestRun_FailsWhenAURHelperMissing(t *testing.T) {

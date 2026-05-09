@@ -9,10 +9,10 @@ suggests: package bundles.
 
 | Plugin  | Source                            | Notes                                            |
 | ------- | --------------------------------- | ------------------------------------------------ |
-| pacman  | Native Arch repositories          | install, demote-to-dep + orphan prune on removal |
-| aur     | AUR via `yay` or `paru`           | wraps an installed helper; no native makepkg     |
-| flatpak | flathub, system-wide and per-user | `--system` and per-user `--user` installs        |
-| node    | global `npm` / `pnpm` / `yarn`    | per-package manager overrides                    |
+| pacman  | Native Arch repositories          | `apply` syncs/repos (`-Syu`) before changes; install; demote-to-dep + orphan prune on removal |
+| aur     | AUR via `yay` or `paru`           | `apply` runs `-Sua` after pacman (AUR-only upgrades); wraps helper; no native makepkg     |
+| flatpak | flathub, system-wide and per-user | `apply` runs `flatpak update` for system + declared users; `--system` / `--user` installs        |
+| node    | global `npm` / `pnpm` / `yarn`    | `apply` upgrades globals per manager in use; per-package manager overrides                    |
 
 What it deliberately does **not** manage: dotfiles, directories, symlinks,
 systemd units, users, or PGP keys. Use a separate dotfile tool for those.
@@ -26,7 +26,7 @@ curl -fsSL https://codeberg.org/gurg/bigkis/raw/branch/main/install.sh | sh
 To pin a version or change install location:
 
 ```sh
-BIGKIS_VERSION=v0.4.0 sh install.sh
+BIGKIS_VERSION=v0.5.0 sh install.sh
 BIGKIS_INSTALL_DIR="$HOME/.local/bin" sh install.sh
 ```
 
@@ -42,9 +42,10 @@ then:
 bigkis doctor                    # preflight checks (PATH, helper, remote, perms)
 bigkis status                    # show drift, no changes
 bigkis status --exit-on-drift    # exit 3 when drift detected (CI-friendly)
-bigkis apply --dry-run           # show what would change
-bigkis apply --json              # emit machine-readable plan; exit 3 on drift
-sudo bigkis apply                # apply system plugins and write state
+bigkis apply --dry-run           # show upgrades + install/remove preview (no changes)
+bigkis apply --json              # emit machine-readable plan; exit 3 on drift (no upgrade list)
+sudo bigkis apply                # upgrade packages, then converge; write state
+sudo bigkis apply --no-upgrade   # skip upgrades (presence-only, like v0.4)
 sudo bigkis apply --yes --quiet  # skip the prompt, suppress info logs
 ```
 
