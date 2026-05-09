@@ -201,3 +201,29 @@ jobs:
           title: ${{ steps.resolve.outputs.version }}
           token: ${{ secrets.GITHUB_TOKEN }}
           override: true
+
+      # Patch the release body via the Codeberg API. forgejo-release@v2's
+      # release-notes input feeds multi-line markdown through a quoted
+      # heredoc inside the action and is fragile (v0.4.1 and v0.5.0 both
+      # shipped with empty bodies under that path). The API accepts the
+      # body as a JSON string, which is robust against any markdown.
+      - name: set release body from changelog
+        if: steps.resolve.outputs.skip == 'false'
+        env:
+          TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          VERSION: ${{ steps.resolve.outputs.version }}
+        run: |
+          set -eu
+          release_id=$(curl -fsSL \
+            -H "Authorization: token $TOKEN" \
+            "https://codeberg.org/api/v1/repos/$REPO/releases/tags/$VERSION" \
+            | python3 -c 'import json,sys; print(json.load(sys.stdin)["id"])')
+          payload=$(python3 -c 'import json; print(json.dumps({"body": open("dist/release-notes.md").read()}))')
+          curl -fsSL -X PATCH \
+            -H "Authorization: token $TOKEN" \
+            -H "Content-Type: application/json" \
+            -d "$payload" \
+            "https://codeberg.org/api/v1/repos/$REPO/releases/$release_id" \
+            > /dev/null
+          echo "release body for $VERSION updated"
