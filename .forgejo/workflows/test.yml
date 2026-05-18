@@ -8,30 +8,6 @@ on:
 jobs:
   test:
     runs-on: codeberg-medium
-    strategy:
-      fail-fast: false
-      matrix:
-        pkg:
-          - ./cmd/bigkis
-          - ./internal/config
-          - ./internal/doctor
-          - ./internal/explain
-          - ./internal/importer
-          - ./internal/lockfile
-          - ./internal/plan
-          - ./internal/plugin/aur
-          - ./internal/plugin/flatpak
-          - ./internal/plugin/node
-          - ./internal/plugin/pacman
-          - ./internal/rollback
-          - ./internal/runner
-          - ./internal/state
-          - ./internal/tui
-          - ./internal/tui/apply
-          - ./internal/tui/components
-          - ./internal/tui/rollback
-          - ./internal/tui/status
-          - ./internal/ui
     steps:
       - name: checkout
         uses: https://code.forgejo.org/actions/checkout@v4
@@ -41,5 +17,32 @@ jobs:
         with:
           go-version: "1.26"
 
-      - name: test ${{ matrix.pkg }}
-        run: go test -count=1 -timeout 5m ${{ matrix.pkg }}
+      - name: vet
+        run: go vet ./...
+
+      - name: gofmt
+        run: |
+          if [ -n "$(gofmt -l .)" ]; then
+            echo "files need gofmt:"
+            gofmt -l .
+            exit 1
+          fi
+
+      - name: test
+        run: go test -race -timeout 10m ./...
+
+  staticcheck:
+    runs-on: codeberg-medium
+    steps:
+      - name: checkout
+        uses: https://code.forgejo.org/actions/checkout@v4
+
+      - name: setup go
+        uses: https://code.forgejo.org/actions/setup-go@v5
+        with:
+          go-version: "1.26"
+
+      - name: staticcheck
+        run: |
+          go install honnef.co/go/tools/cmd/staticcheck@latest
+          "$(go env GOPATH)/bin/staticcheck" ./...
