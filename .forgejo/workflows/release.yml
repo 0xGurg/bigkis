@@ -26,7 +26,7 @@ on:
 
 jobs:
   release:
-    runs-on: codeberg-small
+    runs-on: codeberg-medium
     steps:
       - name: checkout
         uses: https://code.forgejo.org/actions/checkout@v4

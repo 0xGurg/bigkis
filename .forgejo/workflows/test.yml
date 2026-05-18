@@ -6,12 +6,10 @@ on:
   pull_request:
 
 jobs:
-  # codeberg-small (matches release.yml) is more reliable than codeberg-tiny:
-  # the tiny runner's podman socket has been timing out during the workflow
-  # cleanup step ("context deadline exceeded" on .../archive?path=SUMMARY.md)
-  # which fails the job even when go vet / go test / staticcheck pass.
+  # Use codeberg-medium for reliability: the small runner has been failing test
+  # jobs (go vet / go test -race) without surfacing logs in the Codeberg UI.
   test:
-    runs-on: codeberg-small
+    runs-on: codeberg-medium
     steps:
       - name: checkout
         uses: https://code.forgejo.org/actions/checkout@v4
@@ -37,7 +35,7 @@ jobs:
         run: go test -race ./...
 
   staticcheck:
-    runs-on: codeberg-small
+    runs-on: codeberg-medium
     steps:
       - name: checkout
         uses: https://code.forgejo.org/actions/checkout@v4
