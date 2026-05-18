@@ -6,11 +6,32 @@ on:
   pull_request:
 
 jobs:
-  # Isolating CI failure: stripped to bare minimum steps.
-  # Previous runs on codeberg-small and codeberg-medium both failed.
-  # All checks (go vet, gofmt, go test -race, staticcheck) pass locally.
   test:
     runs-on: codeberg-medium
+    strategy:
+      fail-fast: false
+      matrix:
+        pkg:
+          - ./cmd/bigkis
+          - ./internal/config
+          - ./internal/doctor
+          - ./internal/explain
+          - ./internal/importer
+          - ./internal/lockfile
+          - ./internal/plan
+          - ./internal/plugin/aur
+          - ./internal/plugin/flatpak
+          - ./internal/plugin/node
+          - ./internal/plugin/pacman
+          - ./internal/rollback
+          - ./internal/runner
+          - ./internal/state
+          - ./internal/tui
+          - ./internal/tui/apply
+          - ./internal/tui/components
+          - ./internal/tui/rollback
+          - ./internal/tui/status
+          - ./internal/ui
     steps:
       - name: checkout
         uses: https://code.forgejo.org/actions/checkout@v4
@@ -20,5 +41,5 @@ jobs:
         with:
           go-version: "1.26"
 
-      - name: test
-        run: go test -count=1 -timeout 10m ./...
+      - name: test ${{ matrix.pkg }}
+        run: go test -count=1 -timeout 5m ${{ matrix.pkg }}
