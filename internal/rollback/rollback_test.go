@@ -277,6 +277,9 @@ func TestRead_MissingFile(t *testing.T) {
 }
 
 func TestRead_NoPermission(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("skipping: running as root (root bypasses file permissions)")
+	}
 	tmp := t.TempDir()
 	path := filepath.Join(tmp, "unreadable.sh")
 	if err := os.WriteFile(path, []byte("data"), 0o000); err != nil {
