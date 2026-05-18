@@ -274,11 +274,8 @@ func assertReportMatchesCached(report plugin.Report, cached *cachedPlan) error {
 			return fmt.Errorf("report op %+v not in cached plan; rerun Plan", k)
 		}
 	}
-	for k := range expected {
-		if !declared[k] {
-			return fmt.Errorf("cached plan op %+v not in report; rerun Plan", k)
-		}
-	}
+	// Relaxed: cached plan may contain ops the user chose to skip (subset
+	// report from selective-apply TUI). Only declared→expected is enforced.
 	return nil
 }
 

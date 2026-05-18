@@ -245,6 +245,83 @@ func TestShellQuote_RoundTripsTrickyTargets(t *testing.T) {
 // TestNewID_Unique guards against same-second collisions on rapid applies.
 // The format includes nanoseconds so two consecutive calls produce distinct
 // IDs as long as the clock advances at all between them.
+func TestRead_ReturnsContents(t *testing.T) {
+	tmp := t.TempDir()
+	t.Setenv("XDG_STATE_HOME", tmp)
+
+	path := filepath.Join(tmp, "bigkis", "rollbacks", "rollback-test.sh")
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	content := "#!/bin/sh\necho hello\n"
+	if err := os.WriteFile(path, []byte(content), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	s := Script{ID: "test", Path: path}
+	got, err := Read(s)
+	if err != nil {
+		t.Fatalf("Read: %v", err)
+	}
+	if got != content {
+		t.Errorf("Read = %q, want %q", got, content)
+	}
+}
+
+func TestRead_MissingFile(t *testing.T) {
+	s := Script{ID: "missing", Path: "/nonexistent/bogus.sh"}
+	_, err := Read(s)
+	if err == nil {
+		t.Fatal("expected error for missing file")
+	}
+}
+
+func TestRead_NoPermission(t *testing.T) {
+	tmp := t.TempDir()
+	path := filepath.Join(tmp, "unreadable.sh")
+	if err := os.WriteFile(path, []byte("data"), 0o000); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(path, 0o644) })
+
+	s := Script{ID: "no-perm", Path: path}
+	_, err := Read(s)
+	if err == nil {
+		t.Fatal("expected error for unreadable file")
+	}
+}
+
+func TestOpCount(t *testing.T) {
+	body := "#!/bin/sh\n# comment\nset -e\n\nsudo pacman -S pkg\nsudo pacman -Rns pkg2\n"
+	got := OpCount(body)
+	if got != 2 {
+		t.Errorf("OpCount = %d, want 2", got)
+	}
+}
+
+func TestOpCount_EmptyBody(t *testing.T) {
+	got := OpCount("")
+	if got != 0 {
+		t.Errorf("OpCount = %d, want 0", got)
+	}
+}
+
+func TestOpCount_AllCommentLines(t *testing.T) {
+	body := "#!/bin/sh\n# all\n# comments\nset -e\n# only"
+	got := OpCount(body)
+	if got != 0 {
+		t.Errorf("OpCount = %d, want 0", got)
+	}
+}
+
+func TestOpCount_MixedLines(t *testing.T) {
+	body := "#!/bin/sh\nset -e\n\necho one\n# comment\necho two\n\necho three"
+	got := OpCount(body)
+	if got != 3 {
+		t.Errorf("OpCount = %d, want 3", got)
+	}
+}
+
 func TestNewID_Unique(t *testing.T) {
 	t1 := time.Date(2026, 5, 7, 12, 0, 0, 1, time.UTC)
 	t2 := time.Date(2026, 5, 7, 12, 0, 0, 2, time.UTC)

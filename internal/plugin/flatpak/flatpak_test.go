@@ -309,24 +309,28 @@ func TestPlan_IgnoresPreviouslyManagedIgnoredSystemApps(t *testing.T) {
 	}
 }
 
-func TestApply_RejectsMismatchedCachedReport(t *testing.T) {
+func TestApply_AcceptsSubsetReport(t *testing.T) {
+	stubLookPath(t)
 	planF := runner.NewFake()
 	planF.Respond = func(name string, args []string) (string, string, int, error) {
 		return "", "", 0, nil
 	}
 	flat := New()
 	flat.SetRunner(planF.Runner)
-	cfg := &config.Config{Flatpak: config.Flatpak{Packages: []string{"org.mozilla.firefox"}}}
+	cfg := &config.Config{Flatpak: config.Flatpak{Packages: []string{"org.mozilla.firefox", "org.signal.Signal"}}}
 	report, err := flat.Plan(cfg, &state.State{})
 	if err != nil {
 		t.Fatalf("Plan: %v", err)
 	}
-	report.Operations = nil
+	if len(report.Operations) < 2 {
+		t.Fatalf("expected at least 2 ops, got %d", len(report.Operations))
+	}
+	// Trim to a subset (keep only the first op).
+	report.Operations = report.Operations[:1]
 
-	err = flat.Apply(cfg, &state.State{}, report, runner.NewFake().Runner, silentUI())
-
-	if err == nil || !strings.Contains(err.Error(), "cached plan op") {
-		t.Fatalf("expected cached plan mismatch, got %v", err)
+	applyF := runner.NewFake()
+	if err := flat.Apply(cfg, &state.State{}, report, applyF.Runner, silentUI()); err != nil {
+		t.Fatalf("Apply with subset report should succeed, got: %v", err)
 	}
 }
 

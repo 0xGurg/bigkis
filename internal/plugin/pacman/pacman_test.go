@@ -271,6 +271,38 @@ func TestPruneOrphans_OtherExitCodePropagates(t *testing.T) {
 	}
 }
 
+func TestApply_AcceptsSubsetReport(t *testing.T) {
+	stubLookPath(t)
+	planF := runner.NewFake()
+	planF.Respond = func(name string, args []string) (string, string, int, error) {
+		if name == "pacman" && len(args) == 1 && args[0] == "-Qqen" {
+			// Nothing installed, so all declared packages become adds.
+			return "", "", 0, nil
+		}
+		return "", "", 0, nil
+	}
+	p := New()
+	p.SetRunner(planF.Runner)
+	cfg := &config.Config{
+		Pacman:   config.Pacman{Packages: []string{"git", "neovim"}},
+		Settings: config.Settings{PruneOrphans: config.PruneOrphansNone},
+	}
+	report, err := p.Plan(cfg, &state.State{})
+	if err != nil {
+		t.Fatalf("Plan: %v", err)
+	}
+	if len(report.Operations) < 2 {
+		t.Fatalf("expected at least 2 ops, got %d", len(report.Operations))
+	}
+	// Trim to a subset (keep only the first op, discard the rest).
+	report.Operations = report.Operations[:1]
+
+	applyF := runner.NewFake()
+	if err := p.Apply(cfg, &state.State{}, report, applyF.Runner, silentUI()); err != nil {
+		t.Fatalf("Apply with subset report should succeed, got: %v", err)
+	}
+}
+
 func TestUpgrade_RunsSyu(t *testing.T) {
 	stubLookPath(t)
 	p := New()
