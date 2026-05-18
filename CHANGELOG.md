@@ -6,6 +6,48 @@ body of the corresponding
 [Codeberg release](https://codeberg.org/gurg/bigkis/releases), so the Codeberg
 releases page is the canonical place to read what changed.
 
+## v0.6.0 - "Interactive TUI"
+
+`bigkis` now includes interactive terminal user interfaces that activate
+automatically when your terminal supports them (TTY, no `--json`, no
+`--quiet`, `NO_COLOR` unset, `BIGKIS_NO_TUI` unset). All non-TTY
+fallbacks are preserved. The TUIs share a consistent lipgloss theme and
+key bindings with the existing line-based output.
+
+### New commands / flags
+
+- **`bigkis import --interactive`** — Tabbed package picker with
+  checkboxes, filter, and scan error display. Writes to `--output` or
+  stdout on confirm.
+- **`bigkis rollback`** — Split-pane browser showing rollback scripts
+  (newest first) with body preview and confirm-before-execute flow.
+- **`bigkis status`** — Dashboard with per-plugin badges (in sync /
+  changes / unavailable), grouped operation detail, drift summary bar,
+  and an `a` key that suggests the apply command.
+- **`bigkis apply`** — Plan review TUI replacing the `proceed?` text
+  prompt. Shows per-plugin change counts and operation detail.
+- **`bigkis apply --select`** — Plan review with per-operation
+  checkboxes for selective apply. Space toggles, `A` toggles all, Tab
+  switches focus between panes, Enter proceeds with the checked subset.
+
+### Plugin changes
+
+- All four plugins (pacman, AUR, flatpak, node) now accept **subset
+  reports** in `Apply()`. The report must be a subset of the cached plan
+  (every operation must exist in the plan); extra planned operations the
+  user deselected are allowed.
+
+### Development
+
+- 22 test files, 20 packages, 0 failures. Tests cover TUI model
+  interaction (synthetic key messages), TUI gate logic (json/quiet/
+  NO_COLOR/BIGKIS_NO_TUI/pipe), equivalence of `Run` vs `RunSelected`,
+  subset-tolerant plugin assertions, and edge cases (empty states, scan
+  errors, window resize, zero-checked-ops guard).
+- Reviewed across 3 independent reviewers (oracle, zen, google).
+
+Full PR: [#4](https://codeberg.org/gurg/bigkis/pulls/4)
+
 ## v0.5.1
 
 Small follow-up to v0.5.0. No `bigkis` CLI behavior changes; this release is
