@@ -12,9 +12,9 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 
+	rollbackdata "codeberg.org/gurg/bigkis/internal/rollback"
 	"codeberg.org/gurg/bigkis/internal/tui"
 	"codeberg.org/gurg/bigkis/internal/tui/components"
-	rollbackdata "codeberg.org/gurg/bigkis/internal/rollback"
 )
 
 // ──────────────────────────────────────────────
@@ -67,10 +67,10 @@ type RollbackBrowser struct {
 }
 
 type rollbackBrowserModel struct {
-	keymap browserKeyMap
-	scripts []rollbackdata.Script  // newest first
-	items   []scriptItem           // list items mirroring scripts
-	list    list.Model
+	keymap   browserKeyMap
+	scripts  []rollbackdata.Script // newest first
+	items    []scriptItem          // list items mirroring scripts
+	list     list.Model
 	viewport viewport.Model
 
 	// Cached previews: script ID -> body

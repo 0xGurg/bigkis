@@ -102,8 +102,8 @@ func newCheckboxDelegate() checkboxDelegate {
 	}
 }
 
-func (d checkboxDelegate) Height() int                              { return 1 }
-func (d checkboxDelegate) Spacing() int                             { return 0 }
+func (d checkboxDelegate) Height() int                             { return 1 }
+func (d checkboxDelegate) Spacing() int                            { return 0 }
 func (d checkboxDelegate) Update(_ tea.Msg, _ *list.Model) tea.Cmd { return nil }
 
 func (d checkboxDelegate) Render(w io.Writer, m list.Model, index int, item list.Item) {
@@ -172,7 +172,6 @@ type importPickerModel struct {
 	// Set by NewImportPicker; nil means no errors.
 	scanErrs map[string]error
 
-	statusMsg string
 	err       error
 	done      bool
 	cancelled bool
