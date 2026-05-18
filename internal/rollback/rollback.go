@@ -218,6 +218,29 @@ func Run(s Script) error {
 	return cmd.Run()
 }
 
+// Read returns the contents of a rollback script.
+func Read(s Script) (string, error) {
+	data, err := os.ReadFile(s.Path)
+	if err != nil {
+		return "", fmt.Errorf("read rollback script: %w", err)
+	}
+	return string(data), nil
+}
+
+// OpCount returns an approximate count of operations in a rollback script body.
+// It counts non-empty, non-comment lines, excluding the shebang and "set -e".
+func OpCount(body string) int {
+	count := 0
+	for _, line := range strings.Split(body, "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" || strings.HasPrefix(line, "#") || line == "set -e" || line == "#!/bin/sh" {
+			continue
+		}
+		count++
+	}
+	return count
+}
+
 func pruneOldScripts(dir string) error {
 	scripts, err := List()
 	if err != nil {

@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"sort"
 	"strings"
@@ -23,6 +24,10 @@ import (
 	"codeberg.org/gurg/bigkis/internal/rollback"
 	"codeberg.org/gurg/bigkis/internal/runner"
 	"codeberg.org/gurg/bigkis/internal/state"
+	"codeberg.org/gurg/bigkis/internal/tui"
+	applyreview "codeberg.org/gurg/bigkis/internal/tui/apply"
+	tuirollback "codeberg.org/gurg/bigkis/internal/tui/rollback"
+	"codeberg.org/gurg/bigkis/internal/tui/status"
 	"codeberg.org/gurg/bigkis/internal/ui"
 )
 
@@ -93,6 +98,7 @@ func applyCommand() *cli.Command {
 			&cli.StringSliceFlag{Name: "only", Usage: "only run these plugins (comma-separated)"},
 			&cli.StringSliceFlag{Name: "skip", Usage: "skip these plugins (comma-separated)"},
 			&cli.BoolFlag{Name: "no-upgrade", Usage: "skip system package upgrades (only install/remove to match the declaration)"},
+			&cli.BoolFlag{Name: "select", Usage: "interactive review with per-operation checkboxes (requires --interactive TTY)"},
 		},
 		Action: runApply,
 	}
@@ -177,9 +183,17 @@ func importCommand() *cli.Command {
 			&cli.StringSliceFlag{Name: "only", Usage: "only import these plugins (comma-separated)"},
 			&cli.StringFlag{Name: "aur-helper", Value: "yay", Usage: "value to write for [settings].aur_helper"},
 			&cli.StringFlag{Name: "node-manager", Value: "npm", Usage: "value to write for [settings].node_manager"},
+			&cli.BoolFlag{Name: "interactive", Aliases: []string{"i"}, Usage: "interactive package picker (requires TTY)"},
 		},
 		Action: func(c *cli.Context) error {
-			out := os.Stdout
+			opts := importer.Options{
+				Only:        splitCSV(c.StringSlice("only")),
+				AURHelper:   c.String("aur-helper"),
+				NodeManager: c.String("node-manager"),
+			}
+
+			// Compute output writer once — used in both branches below.
+			out := io.Writer(os.Stdout)
 			if path := c.String("output"); path != "" {
 				f, err := os.Create(path)
 				if err != nil {
@@ -188,11 +202,24 @@ func importCommand() *cli.Command {
 				defer f.Close()
 				out = f
 			}
-			return importer.Run(out, importer.Options{
-				Only:        splitCSV(c.StringSlice("only")),
-				AURHelper:   c.String("aur-helper"),
-				NodeManager: c.String("node-manager"),
-			})
+
+			if c.Bool("interactive") && tui.ShouldUse(os.Stdout, os.Stdin, false, false) {
+				model := importer.NewImportPicker(opts)
+				// ImportPicker embeds *importPickerModel so mutations during
+				// program.Run() are visible through the original model reference.
+				// Do not change to a value receiver on importPickerModel.Update
+				// without updating this code.
+				program := tui.NewProgram(model)
+				if _, err := program.Run(); err != nil {
+					return err
+				}
+				if model.Cancelled() {
+					return cli.Exit("", ExitUserCancelled)
+				}
+				return importer.RunSelected(out, opts, model.Selection())
+			}
+
+			return importer.Run(out, opts)
 		},
 	}
 }
@@ -229,6 +256,26 @@ func rollbackCommand() *cli.Command {
 		},
 		Action: func(c *cli.Context) error {
 			u := ui.Default(c.Bool("yes"))
+
+			// TUI browser: no specific flags + TTY
+			if !c.Bool("list") && !c.Bool("latest") && c.String("id") == "" {
+				if tui.ShouldUse(os.Stdout, os.Stdin, c.Bool("json"), c.Bool("quiet")) {
+					model, err := tuirollback.NewRollbackBrowser()
+					if err != nil {
+						return err
+					}
+					program := tui.NewProgram(model)
+					if _, err := program.Run(); err != nil {
+						return err
+					}
+					if model.Confirmed() {
+						return rollback.Run(model.RunTarget())
+					}
+					return nil
+				}
+				// Fall through to existing listing behavior
+			}
+
 			scripts, err := rollback.List()
 			if err != nil {
 				return err
@@ -313,24 +360,54 @@ func runStatus(c *cli.Context) error {
 	only := splitCSV(c.StringSlice("only"))
 	skip := splitCSV(c.StringSlice("skip"))
 	plugins := selectPlugins(cfg.Settings.Enabled, only, skip, reg, u)
+
+	// ── Collect phase ──
+	var statuses []status.PluginStatus
+	for _, p := range plugins {
+		ps := status.PluginStatus{Name: p.Name()}
+		if err := p.Available(cfg); err != nil {
+			ps.Available = false
+			ps.Error = err.Error()
+		} else {
+			ps.Available = true
+			report, err := p.Plan(cfg, st)
+			if err != nil {
+				return fmt.Errorf("%s plan: %w", p.Name(), err)
+			}
+			ps.Report = report
+		}
+		statuses = append(statuses, ps)
+	}
+
+	// ── TUI branch ──
+	if !c.Bool("exit-on-drift") && tui.ShouldUse(os.Stdout, os.Stdin, c.Bool("json"), c.Bool("quiet")) {
+		model := status.NewStatusDashboard(cfg.Path, statuses)
+		program := tui.NewProgram(model)
+		if _, err := program.Run(); err != nil {
+			return err
+		}
+		if model.ApplyRequested() {
+			fmt.Fprintln(os.Stderr, "run `sudo bigkis apply` to converge")
+		}
+		return nil
+	}
+
+	// ── Print branch (existing behavior, now using collected data) ──
 	hasChanges := false
 	var unavailable []string
-	for _, p := range plugins {
-		if err := p.Available(cfg); err != nil {
-			u.Warn("%s: unavailable (%v); skipping", p.Name(), err)
-			unavailable = append(unavailable, p.Name())
+	for _, ps := range statuses {
+		if !ps.Available {
+			u.Warn("%s: unavailable (%v); skipping", ps.Name, ps.Error)
+			unavailable = append(unavailable, ps.Name)
 			continue
 		}
-		report, err := p.Plan(cfg, st)
-		if err != nil {
-			return fmt.Errorf("%s plan: %w", p.Name(), err)
-		}
+		report := ps.Report
 		if !report.HasChanges() {
-			u.Info("%s: in sync", p.Name())
+			u.Info("%s: in sync", ps.Name)
 			continue
 		}
 		hasChanges = true
-		u.Info("%s: %d change(s)", p.Name(), len(report.Operations))
+		u.Info("%s: %d change(s)", ps.Name, len(report.Operations))
 		printReport(u, report)
 	}
 	if !hasChanges {
@@ -491,10 +568,61 @@ func runApply(c *cli.Context) error {
 		u.Info("system matches declaration; running upgrades only")
 	}
 
-	prompt := applyConfirmPrompt(plan.overall, !noUpgrade)
-	if !u.Confirm(prompt) {
-		u.Info("aborted by user")
-		return cli.Exit("aborted by user", ExitUserCancelled)
+	// TUI plan review: replaces the text confirm prompt with an interactive review.
+	// Gated: not --dry-run (already handled), not --yes (user skipped confirm),
+	// not --json (JSON path), and terminal is interactive.
+	if !dryRun && !c.Bool("yes") && plan.overall && tui.ShouldUse(os.Stdout, os.Stdin, c.Bool("json"), c.Bool("quiet")) {
+		var plans []applyreview.PluginPlan
+		for _, s := range plan.stages {
+			plans = append(plans, applyreview.PluginPlan{
+				Name:   s.Plugin.Name(),
+				InSync: false,
+				Report: s.Report,
+			})
+		}
+		for _, p := range plan.insync {
+			plans = append(plans, applyreview.PluginPlan{
+				Name:   p.Name(),
+				InSync: true,
+				Report: plugin.Report{},
+			})
+		}
+		selective := c.Bool("select")
+		model := applyreview.NewApplyReview(cfg.Path, plans, dryRun, !noUpgrade, selective)
+		program := tui.NewProgram(model)
+		if _, err := program.Run(); err != nil {
+			return err
+		}
+		if model.Cancelled() {
+			u.Info("aborted by user")
+			return cli.Exit("aborted by user", ExitUserCancelled)
+		}
+		// Confirmed — fall through to apply logic below.
+		// Build the stages to apply. In selective mode, only the checked
+		// operations from each plugin are included.
+		if selective {
+			var filteredStages []stage
+			for _, fp := range model.FilteredPlans() {
+				if !fp.InSync && len(fp.Report.Operations) > 0 {
+					for _, s := range plan.stages {
+						if s.Plugin.Name() == fp.Name {
+							filteredStages = append(filteredStages, stage{
+								Plugin: s.Plugin,
+								Report: fp.Report,
+							})
+							break
+						}
+					}
+				}
+			}
+			plan.stages = filteredStages
+		}
+	} else {
+		prompt := applyConfirmPrompt(plan.overall, !noUpgrade)
+		if !u.Confirm(prompt) {
+			u.Info("aborted by user")
+			return cli.Exit("aborted by user", ExitUserCancelled)
+		}
 	}
 
 	r := runner.New(false)
@@ -939,7 +1067,7 @@ _bigkis_complete() {
 
     case "${words[1]}" in
         apply)
-            COMPREPLY=( $(compgen -W "--dry-run --yes --quiet --json --only --skip --no-upgrade --no-rollback --no-lock --lock --config" -- "$cur") )
+            COMPREPLY=( $(compgen -W "--dry-run --yes --quiet --json --only --skip --no-upgrade --no-rollback --no-lock --lock --select --config" -- "$cur") )
             ;;
         status)
             COMPREPLY=( $(compgen -W "--json --exit-on-drift --only --skip --config" -- "$cur") )
@@ -948,7 +1076,7 @@ _bigkis_complete() {
             COMPREPLY=( $(compgen -W "--json --config" -- "$cur") )
             ;;
         import)
-            COMPREPLY=( $(compgen -W "--output --only --aur-helper --node-manager" -- "$cur") )
+            COMPREPLY=( $(compgen -W "--output --only --aur-helper --node-manager --interactive" -- "$cur") )
             ;;
         rollback)
             COMPREPLY=( $(compgen -W "--list --latest --id --yes" -- "$cur") )
@@ -979,10 +1107,10 @@ _bigkis() {
     return
   fi
   case "$words[2]" in
-    apply)      _arguments '--dry-run' '--yes' '--quiet' '--json' '--only=' '--skip=' '--no-upgrade' '--no-rollback' '--no-lock' '--lock=' '--config=' ;;
+    apply)      _arguments '--dry-run' '--yes' '--quiet' '--json' '--only=' '--skip=' '--no-upgrade' '--no-rollback' '--no-lock' '--lock=' '--select' '--config=' ;;
     status)     _arguments '--json' '--exit-on-drift' '--only=' '--skip=' '--config=' ;;
     doctor)     _arguments '--json' '--config=' ;;
-    import)     _arguments '--output=' '--only=' '--aur-helper=' '--node-manager=' ;;
+    import)     _arguments '--output=' '--only=' '--aur-helper=' '--node-manager=' '--interactive' ;;
     rollback)   _arguments '--list' '--latest' '--id=' '--yes' ;;
     completion) _values 'shell' bash zsh fish ;;
   esac
@@ -1010,6 +1138,7 @@ complete -c bigkis -n '__fish_seen_subcommand_from apply'  -l no-upgrade  -d 'sk
 complete -c bigkis -n '__fish_seen_subcommand_from apply'  -l no-rollback -d 'do not write rollback'
 complete -c bigkis -n '__fish_seen_subcommand_from apply'  -l no-lock     -d 'do not write lockfile'
 complete -c bigkis -n '__fish_seen_subcommand_from apply'  -l lock        -d 'lockfile path'
+complete -c bigkis -n '__fish_seen_subcommand_from apply'  -l select      -d 'interactive per-operation checkboxes'
 
 complete -c bigkis -n '__fish_seen_subcommand_from status' -l json          -d 'JSON output'
 complete -c bigkis -n '__fish_seen_subcommand_from status' -l exit-on-drift -d 'exit 3 on drift'
@@ -1018,8 +1147,9 @@ complete -c bigkis -n '__fish_seen_subcommand_from status' -l skip          -d '
 
 complete -c bigkis -n '__fish_seen_subcommand_from doctor' -l json          -d 'JSON output'
 
-complete -c bigkis -n '__fish_seen_subcommand_from import' -l output      -d 'write to file'
-complete -c bigkis -n '__fish_seen_subcommand_from import' -l only        -d 'plugins to include'
+complete -c bigkis -n '__fish_seen_subcommand_from import' -l output       -d 'write to file'
+complete -c bigkis -n '__fish_seen_subcommand_from import' -l only         -d 'plugins to include'
+complete -c bigkis -n '__fish_seen_subcommand_from import' -l interactive  -d 'interactive package picker'
 
 complete -c bigkis -n '__fish_seen_subcommand_from rollback' -l list   -d 'list rollback scripts'
 complete -c bigkis -n '__fish_seen_subcommand_from rollback' -l latest -d 'run the most recent rollback'

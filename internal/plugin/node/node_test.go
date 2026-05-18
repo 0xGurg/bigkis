@@ -316,6 +316,34 @@ func TestPlan_FailsWhenPrevManagerMissing(t *testing.T) {
 	}
 }
 
+func TestApply_AcceptsSubsetReport(t *testing.T) {
+	stubLookPath(t, map[string]bool{"npm": true})
+	f := runner.NewFake()
+	f.Respond = func(name string, args []string) (string, string, int, error) {
+		return `{"dependencies":{}}`, "", 0, nil
+	}
+	n := New()
+	n.SetRunner(f.Runner)
+	cfg := &config.Config{
+		Settings: config.Settings{NodeManager: "npm"},
+		Node:     config.Node{Packages: []string{"typescript", "eslint"}},
+	}
+	report, err := n.Plan(cfg, &state.State{})
+	if err != nil {
+		t.Fatalf("Plan: %v", err)
+	}
+	if len(report.Operations) < 2 {
+		t.Fatalf("expected at least 2 ops, got %d", len(report.Operations))
+	}
+	// Trim to a subset (keep only the first op).
+	report.Operations = report.Operations[:1]
+
+	applyF := runner.NewFake()
+	if err := n.Apply(cfg, &state.State{}, report, applyF.Runner, silentNodeUI()); err != nil {
+		t.Fatalf("Apply with subset report should succeed, got: %v", err)
+	}
+}
+
 func TestUpgrade_PerReferencedManager(t *testing.T) {
 	stubLookPath(t, map[string]bool{"npm": true, "pnpm": true, "yarn": true})
 	n := New()

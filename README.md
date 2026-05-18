@@ -47,7 +47,19 @@ bigkis apply --json              # emit machine-readable plan; exit 3 on drift (
 sudo bigkis apply                # upgrade packages, then converge; write state
 sudo bigkis apply --no-upgrade   # skip upgrades (presence-only, like v0.4)
 sudo bigkis apply --yes --quiet  # skip the prompt, suppress info logs
+
+# interactive mode
+bigkis import --interactive                    # tabbed package picker before writing system.toml
+bigkis rollback                                # split-pane browser to preview and run rollback scripts
+bigkis status                                  # dashboard with per-plugin change counts and operation detail
+bigkis apply                                   # plan review screen replacing the text confirmation prompt
+bigkis apply --select                          # plan review with per-operation checkboxes for selective apply
 ```
+
+> **Interactive mode** activates automatically when your terminal supports it
+> (TTY, no `--json`, no `--quiet`, no `NO_COLOR`, not piped). Set
+> `BIGKIS_NO_TUI=1` to disable it globally. All TUIs support `q` to quit and
+> share the same visual theme with the line-based output.
 
 `bigkis` returns distinct exit codes (`0` ok, `1` error, `2` user-cancelled,
 `3` drift) so wrappers can branch precisely. See

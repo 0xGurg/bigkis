@@ -248,6 +248,36 @@ func TestApply_KeepsCurrentUserWhenInvokedUnprivileged(t *testing.T) {
 	}
 }
 
+func TestApply_AcceptsSubsetReport(t *testing.T) {
+	stubLookPath(t, map[string]bool{"pacman": true, "paru": true})
+	stubProcessUser(t, 1000, map[string]string{})
+	planF := runner.NewFake()
+	planF.Respond = func(name string, args []string) (string, string, int, error) {
+		// No foreign packages installed, so all declared become adds.
+		return "", "", 1, runner.NewExitError(1, "exit status 1")
+	}
+	a := New()
+	a.SetRunner(planF.Runner)
+	cfg := &config.Config{
+		Settings: config.Settings{AURHelper: "paru"},
+		AUR:      config.AUR{Packages: []string{"yay-bin", "fnm-bin"}},
+	}
+	report, err := a.Plan(cfg, &state.State{})
+	if err != nil {
+		t.Fatalf("Plan: %v", err)
+	}
+	if len(report.Operations) < 2 {
+		t.Fatalf("expected at least 2 ops, got %d", len(report.Operations))
+	}
+	// Trim to a subset (keep only the first op).
+	report.Operations = report.Operations[:1]
+
+	applyF := runner.NewFake()
+	if err := a.Apply(cfg, &state.State{}, report, applyF.Runner, silentUI()); err != nil {
+		t.Fatalf("Apply with subset report should succeed, got: %v", err)
+	}
+}
+
 func TestUpgrade_RunsSuaAsSudoUser(t *testing.T) {
 	stubLookPath(t, map[string]bool{"pacman": true, "yay": true})
 	stubProcessUser(t, 0, map[string]string{"SUDO_USER": "alice"})
