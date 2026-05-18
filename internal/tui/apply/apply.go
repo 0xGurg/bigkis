@@ -32,7 +32,7 @@ import (
 // PluginPlan holds the plan result for one plugin in the apply review.
 type PluginPlan struct {
 	Name   string
-	InSync bool          // true when the plugin has no changes
+	InSync bool // true when the plugin has no changes
 	Report plugin.Report
 }
 
@@ -127,8 +127,8 @@ type checkboxDelegate struct {
 	removeStyle     lipgloss.Style
 }
 
-func (d checkboxDelegate) Height() int                              { return 1 }
-func (d checkboxDelegate) Spacing() int                             { return 0 }
+func (d checkboxDelegate) Height() int                             { return 1 }
+func (d checkboxDelegate) Spacing() int                            { return 0 }
 func (d checkboxDelegate) Update(_ tea.Msg, _ *list.Model) tea.Cmd { return nil }
 
 func (d checkboxDelegate) Render(w io.Writer, m list.Model, index int, item list.Item) {
@@ -182,18 +182,18 @@ type applyReviewModel struct {
 	cancelled bool
 	confirmed bool
 
-	confirm   components.ConfirmBar
-	width     int
-	height    int
+	confirm components.ConfirmBar
+	width   int
+	height  int
 
 	// Phase 5: selective apply
-	selective    bool                  // true when --select is passed
-	opItems      []checkedOp           // current plugin's operations with checkboxes
-	opList       list.Model            // interactive operation list (replaces viewport when selective)
-	opDelegate   checkboxDelegate      // custom delegate for opList
-	checkedOps   map[int]map[string]bool // per-plugin checked state by "kind:target"
-	focusRight   bool                  // false = left pane (plugin list), true = right pane (op list)
-	filteredPlans []PluginPlan         // filtered plans with only checked ops
+	selective     bool                    // true when --select is passed
+	opItems       []checkedOp             // current plugin's operations with checkboxes
+	opList        list.Model              // interactive operation list (replaces viewport when selective)
+	opDelegate    checkboxDelegate        // custom delegate for opList
+	checkedOps    map[int]map[string]bool // per-plugin checked state by "kind:target"
+	focusRight    bool                    // false = left pane (plugin list), true = right pane (op list)
+	filteredPlans []PluginPlan            // filtered plans with only checked ops
 }
 
 // ──────────────────────────────────────────────

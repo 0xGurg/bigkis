@@ -13,19 +13,19 @@ var Theme = struct {
 	Red, Green, Yellow, Blue, Cyan, Grey lipgloss.Color
 
 	// Pre-built styles matching ui.UI methods.
-	Add        lipgloss.Style
-	Remove     lipgloss.Style
-	Info       lipgloss.Style
-	Step       lipgloss.Style
-	Warn       lipgloss.Style
-	Error      lipgloss.Style
-	Dim        lipgloss.Style
-	ActiveTab  lipgloss.Style
+	Add         lipgloss.Style
+	Remove      lipgloss.Style
+	Info        lipgloss.Style
+	Step        lipgloss.Style
+	Warn        lipgloss.Style
+	Error       lipgloss.Style
+	Dim         lipgloss.Style
+	ActiveTab   lipgloss.Style
 	InactiveTab lipgloss.Style
-	Bar        lipgloss.Style
-	Title      lipgloss.Style
-	Highlight  lipgloss.Style
-	Selected   lipgloss.Style
+	Bar         lipgloss.Style
+	Title       lipgloss.Style
+	Highlight   lipgloss.Style
+	Selected    lipgloss.Style
 
 	Border lipgloss.Style
 }{
@@ -42,25 +42,25 @@ var Theme = struct {
 	Cyan:   lipgloss.Color("6"),
 	Grey:   lipgloss.Color("8"),
 
-	Add:   lipgloss.NewStyle().Foreground(lipgloss.Color("2")),  // green
-	Remove: lipgloss.NewStyle().Foreground(lipgloss.Color("1")),  // red
-	Info:  lipgloss.NewStyle().Foreground(lipgloss.Color("4")).Bold(true),  // blue+bold
-	Step:  lipgloss.NewStyle().Foreground(lipgloss.Color("6")),  // cyan
-	Warn:  lipgloss.NewStyle().Foreground(lipgloss.Color("3")).Bold(true),  // yellow+bold
-	Error: lipgloss.NewStyle().Foreground(lipgloss.Color("1")).Bold(true),  // red+bold
-	Dim:   lipgloss.NewStyle().Foreground(lipgloss.Color("8")),  // grey
+	Add:    lipgloss.NewStyle().Foreground(lipgloss.Color("2")),            // green
+	Remove: lipgloss.NewStyle().Foreground(lipgloss.Color("1")),            // red
+	Info:   lipgloss.NewStyle().Foreground(lipgloss.Color("4")).Bold(true), // blue+bold
+	Step:   lipgloss.NewStyle().Foreground(lipgloss.Color("6")),            // cyan
+	Warn:   lipgloss.NewStyle().Foreground(lipgloss.Color("3")).Bold(true), // yellow+bold
+	Error:  lipgloss.NewStyle().Foreground(lipgloss.Color("1")).Bold(true), // red+bold
+	Dim:    lipgloss.NewStyle().Foreground(lipgloss.Color("8")),            // grey
 
-	ActiveTab:   lipgloss.NewStyle().Foreground(lipgloss.Color("2")).Bold(true),   // green+bold
-	InactiveTab: lipgloss.NewStyle().Foreground(lipgloss.Color("8")),              // grey
-	Bar:         lipgloss.NewStyle().Foreground(lipgloss.Color("8")),              // grey
+	ActiveTab:   lipgloss.NewStyle().Foreground(lipgloss.Color("2")).Bold(true), // green+bold
+	InactiveTab: lipgloss.NewStyle().Foreground(lipgloss.Color("8")),            // grey
+	Bar:         lipgloss.NewStyle().Foreground(lipgloss.Color("8")),            // grey
 	Title:       lipgloss.NewStyle().Bold(true),
-	Highlight:   lipgloss.NewStyle().Foreground(lipgloss.Color("6")).Bold(true),   // cyan+bold
-	Selected:    lipgloss.NewStyle().Foreground(lipgloss.Color("2")),              // green
+	Highlight:   lipgloss.NewStyle().Foreground(lipgloss.Color("6")).Bold(true), // cyan+bold
+	Selected:    lipgloss.NewStyle().Foreground(lipgloss.Color("2")),            // green
 
 	// Subtle border for viewports and list frames.
 	Border: lipgloss.NewStyle().
 		Border(lipgloss.RoundedBorder()).
-		BorderForeground(lipgloss.Color("8")),  // grey
+		BorderForeground(lipgloss.Color("8")), // grey
 }
 
 // StyleAddPrefix returns a styled "+ <text>" line.

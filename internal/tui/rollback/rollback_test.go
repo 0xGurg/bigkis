@@ -9,8 +9,8 @@ import (
 	"github.com/charmbracelet/bubbles/viewport"
 	tea "github.com/charmbracelet/bubbletea"
 
-	"codeberg.org/gurg/bigkis/internal/tui/components"
 	rollbackdata "codeberg.org/gurg/bigkis/internal/rollback"
+	"codeberg.org/gurg/bigkis/internal/tui/components"
 )
 
 // newTestBrowser creates a model with pre-populated scripts for testing.

@@ -3,8 +3,8 @@ package tui
 import (
 	"os"
 
-	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/bubbles/key"
+	tea "github.com/charmbracelet/bubbletea"
 	"github.com/mattn/go-isatty"
 )
 
