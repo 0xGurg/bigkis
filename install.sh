@@ -86,6 +86,8 @@ install_binary() {
 need_cmd uname
 need_cmd tr
 need_cmd awk
+need_cmd grep
+need_cmd sed
 need_cmd install
 
 target="$(detect_target)"
@@ -93,7 +95,22 @@ asset="bigkis-$target"
 
 case "$version" in
   latest)
-    base_url="$repo/releases/latest/download"
+    # Codeberg's /releases/latest/download endpoint does not reliably
+    # redirect to assets. Resolve the latest tag via the API first.
+    # Derive the API URL from the repo URL:
+    #   https://codeberg.org/gurg/bigkis → https://codeberg.org/api/v1/repos/gurg/bigkis
+    api_url="$(echo "$repo" | sed 's|^\(https\?://[^/]*\)/\(.*\)|\1/api/v1/repos/\2|')/releases/latest"
+    if command -v curl >/dev/null 2>&1; then
+      resolved="$(curl -fsSL "$api_url" 2>/dev/null | grep -o '"tag_name":"[^"]*"' | head -1 | sed 's/"tag_name":"//;s/"//')" || true
+    elif command -v wget >/dev/null 2>&1; then
+      resolved="$(wget -qO- "$api_url" 2>/dev/null | grep -o '"tag_name":"[^"]*"' | head -1 | sed 's/"tag_name":"//;s/"//')" || true
+    fi
+    if [ -n "$resolved" ]; then
+      version="$resolved"
+      base_url="$repo/releases/download/$version"
+    else
+      die "could not resolve latest release tag from $api_url; set BIGKIS_VERSION=vX.Y.Z explicitly"
+    fi
     ;;
   *)
     base_url="$repo/releases/download/$version"
