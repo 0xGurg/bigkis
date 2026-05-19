@@ -1,8 +1,12 @@
 name: release
 
-# Releases are cut by pushing an annotated version tag (e.g. v0.5.1). This
+# Releases are cut by pushing an annotated version tag (e.g. v0.6.2). This
 # workflow builds static linux/amd64 and linux/arm64 binaries, checksums them,
 # optionally minisigns checksums.txt, and publishes Codeberg release assets.
+#
+# Release notes are written directly on the Codeberg releases page when you
+# create a tag. There is no CHANGELOG.md — the Codeberg release body is the
+# source of truth for what changed.
 #
 # Required secret: GITHUB_TOKEN is auto-provided by Forgejo Actions and has
 # enough scope on the current repo to create releases. If your instance
@@ -14,10 +18,6 @@ name: release
 # release publish:
 # - AUR_SSH_PRIVATE_KEY: private SSH key for an AUR account with push access
 #   to ssh://aur@aur.archlinux.org/bigkis-bin.git
-#
-# We update AUR only on tag-triggered runs (not the main-push bootstrap run)
-# so the changelog-driven path does not race itself when it creates a tag and
-# that tag immediately triggers a second workflow run.
 
 on:
   push:
@@ -65,30 +65,6 @@ jobs:
         working-directory: dist
         run: sha256sum bigkis-linux-amd64 bigkis-linux-arm64 > checksums.txt
 
-      # Extract the section of CHANGELOG.md matching this tag and upload
-      # it as a release asset. Keeping the notes as an asset avoids
-      # forgejo-release@v2's fragile release-notes input path while still
-      # putting the changelog on the Codeberg release instead of the wiki.
-      - name: extract release notes
-        env:
-          VERSION: ${{ github.ref_name }}
-        run: |
-          tag="${VERSION}"
-          file="dist/release-notes.md"
-          if [ -f CHANGELOG.md ]; then
-            awk -v tag="$tag" '
-              BEGIN { found = 0 }
-              $0 ~ "^## "tag"([[:space:]]|$)" { found = 1; next }
-              /^## v[0-9]/ && found { exit }
-              found { print }
-            ' CHANGELOG.md > "$file"
-          fi
-          if [ ! -s "$file" ]; then
-            printf 'Release %s. See CHANGELOG.md for details.\n' "$tag" > "$file"
-          fi
-          echo "--- release notes for $tag ---"
-          cat "$file"
-
       # Sign checksums.txt with minisign when a signing secret is configured.
       # Set repo secrets MINISIGN_PRIVATE_KEY (the contents of the .key file)
       # and MINISIGN_PASSWORD. Skipped silently when MINISIGN_PRIVATE_KEY is
@@ -127,31 +103,6 @@ jobs:
           title: ${{ github.ref_name }}
           token: ${{ secrets.GITHUB_TOKEN }}
           override: true
-
-      # Patch the release body via the Codeberg API. forgejo-release@v2's
-      # release-notes input feeds multi-line markdown through a quoted
-      # heredoc inside the action and is fragile (v0.4.1 and v0.5.0 both
-      # shipped with empty bodies under that path). The API accepts the
-      # body as a JSON string, which is robust against any markdown.
-      - name: set release body from changelog
-        env:
-          TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          REPO: ${{ github.repository }}
-          VERSION: ${{ github.ref_name }}
-        run: |
-          set -eu
-          release_id=$(curl -fsSL \
-            -H "Authorization: token $TOKEN" \
-            "https://codeberg.org/api/v1/repos/$REPO/releases/tags/$VERSION" \
-            | python3 -c 'import json,sys; print(json.load(sys.stdin)["id"])')
-          payload=$(python3 -c 'import json; print(json.dumps({"body": open("dist/release-notes.md").read()}))')
-          curl -fsSL -X PATCH \
-            -H "Authorization: token $TOKEN" \
-            -H "Content-Type: application/json" \
-            -d "$payload" \
-            "https://codeberg.org/api/v1/repos/$REPO/releases/$release_id" \
-            > /dev/null
-          echo "release body for $VERSION updated"
 
       - name: wait for release asset availability
         if: secrets.AUR_SSH_PRIVATE_KEY != ''
