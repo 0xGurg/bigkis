@@ -688,7 +688,10 @@ func runApply(c *cli.Context) error {
 	if !noUpgrade {
 		u.Info("upgrading packages")
 		if err := runUpgrades(upgradePlugins, cfg, st, r, u); err != nil {
-			return err
+			// Some upgrades failed but others may have succeeded. Continue
+			// with apply so that install/remove operations still run for
+			// plugins whose upgrades worked. The error is reported at the end.
+			u.Warn("some upgrades failed (continuing with apply): %v", err)
 		}
 	}
 
@@ -734,6 +737,11 @@ func runApply(c *cli.Context) error {
 	}
 
 	if applyErr != nil {
+		// Partial failure: still persist state for plugins that succeeded
+		// so a subsequent apply doesn't re-plan their work.
+		if err := persistInSync(plan.insync, cfg, st, statePath, u); err != nil {
+			u.Warn("could not save state after partial failure: %v", err)
+		}
 		return applyErr
 	}
 
@@ -806,18 +814,26 @@ func planAll(cfg *config.Config, st *state.State, plugins []plugin.Plugin, u *ui
 }
 
 // applyStages runs each stage's Apply + PersistState and checkpoints the
-// state file after every successful plugin. It returns the stages that
+// state file after every successful plugin. If a plugin fails, the error is
+// recorded and the remaining plugins still run. It returns the stages that
 // completed successfully so the caller can write a rollback script that
-// matches reality even on partial failure.
+// matches reality even on partial failure. A multi-error is returned if any
+// stages failed.
 func applyStages(stages []stage, cfg *config.Config, st *state.State, statePath string, r *runner.Runner, u *ui.UI) ([]stage, error) {
 	var applied []stage
+	var errs []string
 	for _, s := range stages {
 		u.Info("plugin: %s", s.Plugin.Name())
 		if err := s.Plugin.Apply(cfg, st, s.Report, r, u); err != nil {
-			return applied, fmt.Errorf("%s apply: %w", s.Plugin.Name(), err)
+			u.Warn("%s apply failed: %v", s.Plugin.Name(), err)
+			errs = append(errs, fmt.Sprintf("%s: %v", s.Plugin.Name(), err))
+			continue
 		}
 		if err := s.Plugin.PersistState(cfg, st); err != nil {
-			return applied, fmt.Errorf("%s persist state: %w", s.Plugin.Name(), err)
+			u.Warn("%s persist state failed: %v", s.Plugin.Name(), err)
+			errs = append(errs, fmt.Sprintf("%s persist: %v", s.Plugin.Name(), err))
+			// Apply succeeded but persist failed — still count as applied
+			// since the system was changed.
 		}
 		if statePath != "" {
 			if err := state.Save(statePath, st); err != nil {
@@ -825,6 +841,9 @@ func applyStages(stages []stage, cfg *config.Config, st *state.State, statePath 
 			}
 		}
 		applied = append(applied, s)
+	}
+	if len(errs) > 0 {
+		return applied, fmt.Errorf("apply failures: %s", strings.Join(errs, "; "))
 	}
 	return applied, nil
 }
@@ -1026,16 +1045,23 @@ func pluginsForUpgrade(all []plugin.Plugin, unavailable []string) []plugin.Plugi
 
 // runUpgrades invokes Plugin.Upgrade for each plugin in order. Plugins that
 // were unavailable during planning should already be filtered out; we still
-// call Available as a cheap consistency check before Upgrade.
+// call Available as a cheap consistency check before Upgrade. If a plugin's
+// upgrade fails, the error is recorded and the remaining plugins still run.
+// A multi-error is returned if any upgrades failed.
 func runUpgrades(plugins []plugin.Plugin, cfg *config.Config, st *state.State, r *runner.Runner, u *ui.UI) error {
+	var errs []string
 	for _, p := range plugins {
 		if err := p.Available(cfg); err != nil {
 			u.Warn("%s: unavailable (%v); skipping upgrade", p.Name(), err)
 			continue
 		}
 		if err := p.Upgrade(cfg, st, r, u); err != nil {
-			return fmt.Errorf("%s upgrade: %w", p.Name(), err)
+			u.Warn("%s upgrade failed: %v", p.Name(), err)
+			errs = append(errs, fmt.Sprintf("%s: %v", p.Name(), err))
 		}
+	}
+	if len(errs) > 0 {
+		return fmt.Errorf("upgrade failures: %s", strings.Join(errs, "; "))
 	}
 	return nil
 }

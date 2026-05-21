@@ -112,12 +112,13 @@ func TestApplyStages_MidLoopFailureKeepsSuccessfulCheckpoints(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error from second stage, got nil")
 	}
-	if len(applied) != 1 || applied[0].Plugin.Name() != "pacman" {
-		t.Errorf("applied = %+v, want only pacman", applied)
+	// With continue-on-failure, pacman and node both succeed; only aur fails.
+	if len(applied) != 2 || applied[0].Plugin.Name() != "pacman" || applied[1].Plugin.Name() != "node" {
+		t.Errorf("applied = %+v, want pacman and node", applied)
 	}
 
-	// state.json should reflect ONLY the pacman stage (which succeeded), not
-	// node (which never ran) and not aur (which failed before PersistState).
+	// state.json should reflect pacman and node (which succeeded), not
+	// aur (which failed before PersistState).
 	loaded, err := state.Load(statePath)
 	if err != nil {
 		t.Fatalf("Load: %v", err)
@@ -131,8 +132,8 @@ func TestApplyStages_MidLoopFailureKeepsSuccessfulCheckpoints(t *testing.T) {
 		t.Errorf("aur should not be in state after failure, got %v", aur)
 	}
 	var node []string
-	if found, _ := loaded.Get("node", &node); found {
-		t.Errorf("node should not be in state (never ran), got %v", node)
+	if _, err := loaded.Get("node", &node); err != nil || len(node) != 1 {
+		t.Errorf("expected node checkpointed, got %v err=%v", node, err)
 	}
 }
 
@@ -143,15 +144,17 @@ func TestApplyStages_PersistStateFailureIsWrapped(t *testing.T) {
 	logUI := ui.New(io.Discard, &bytes.Buffer{}, false, true)
 	boom := errors.New("persist boom")
 	stages := []stage{
-		{Plugin: &fakePlugin{name: "pacman", persistErr: boom}, Report: plugin.Report{Plugin: "pacman"}},
+		{Plugin: &fakePlugin{name: "pacman", stateValue: []string{"git"}, persistErr: boom}, Report: plugin.Report{Plugin: "pacman"}},
 	}
 
 	applied, err := applyStages(stages, cfg, st, statePath, runner.NewFake().Runner, logUI)
 
-	if len(applied) != 0 {
-		t.Fatalf("applied = %+v, want none", applied)
+	// Apply succeeded but PersistState failed — plugin is still counted as
+	// applied since the system was changed.
+	if len(applied) != 1 || applied[0].Plugin.Name() != "pacman" {
+		t.Fatalf("applied = %+v, want pacman (apply succeeded)", applied)
 	}
-	if err == nil || !strings.Contains(err.Error(), "pacman persist state: persist boom") {
+	if err == nil || !strings.Contains(err.Error(), "pacman persist: persist boom") {
 		t.Fatalf("err = %v, want wrapped persist error", err)
 	}
 }
@@ -304,8 +307,8 @@ func TestRunUpgrades_WrapsUpgradeError(t *testing.T) {
 
 	err := runUpgrades([]plugin.Plugin{p}, cfg, st, runner.NewFake().Runner, logUI)
 
-	if err == nil || !strings.Contains(err.Error(), "pacman upgrade: boom") {
-		t.Fatalf("err = %v, want wrapped upgrade error", err)
+	if err == nil || !strings.Contains(err.Error(), "pacman") || !strings.Contains(err.Error(), "boom") {
+		t.Fatalf("err = %v, want upgrade error mentioning pacman and boom", err)
 	}
 }
 
