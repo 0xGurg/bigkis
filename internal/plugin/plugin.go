@@ -73,7 +73,7 @@ type Operation struct {
 type OpKind int
 
 const (
-	OpAdd    OpKind = iota
+	OpAdd OpKind = iota
 	OpRemove
 	OpUpdate // installed package has a newer version available
 )

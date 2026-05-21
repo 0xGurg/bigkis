@@ -31,9 +31,9 @@ import (
 
 // PluginPlan holds the plan result for one plugin in the apply review.
 type PluginPlan struct {
-	Name    string
-	InSync  bool               // true when the plugin has no changes
-	Report  plugin.Report      // drift operations (add/remove)
+	Name     string
+	InSync   bool                 // true when the plugin has no changes
+	Report   plugin.Report        // drift operations (add/remove)
 	Upgrades plugin.UpgradeReport // pending upgrades (OpUpdate only)
 }
 
