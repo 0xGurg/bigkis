@@ -337,11 +337,18 @@ func removeConflictingInstalled(pkgs []string, r *runner.Runner, helper, helperU
 // fails — the caller should proceed and let the install step surface any
 // real conflict.
 func queryConflicts(pkg string, r *runner.Runner, helper, helperUser string) ([]string, error) {
-	out, err := r.Capture(helper, "-Si", pkg)
+	// Use Run with CaptureOutput instead of Capture, because Capture doesn't
+	// support the User parameter — and AUR helpers refuse to run as root.
+	res, err := r.Run(runner.Spec{
+		Name:          helper,
+		Args:          []string{"-Si", pkg},
+		User:          helperUser,
+		CaptureOutput: true,
+	})
 	if err != nil {
 		return nil, err
 	}
-	return parseConflictsFromInfo(out), nil
+	return parseConflictsFromInfo(res.Stdout), nil
 }
 
 // parseConflictsFromInfo extracts the "Conflicts With" values from pacman -Si
