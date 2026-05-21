@@ -92,14 +92,10 @@ func (p *Pacman) Apply(cfg *config.Config, st *state.State, report plugin.Report
 		return nil
 	}
 
-	if len(d.Add) > 0 {
-		u.Step("pacman: installing %d package(s)", len(d.Add))
-		args := append([]string{"-S", "--needed", "--noconfirm"}, d.Add...)
-		if _, err := r.Run(runner.Spec{Name: "pacman", Args: args, Sudo: true}); err != nil {
-			return fmt.Errorf("pacman -S: %w", err)
-		}
-	}
-
+	// Demote and prune before installing so that conflicting packages (e.g.
+	// replacing "nvidia" with "nvidia-dkms") are gone before the new package
+	// is installed. Installing first fails when the new package conflicts
+	// with the one still on disk.
 	if len(d.Remove) > 0 {
 		// Capture pre-existing orphans so the prune below does not yank
 		// packages that were already orphans before bigkis touched anything.
@@ -130,6 +126,14 @@ func (p *Pacman) Apply(cfg *config.Config, st *state.State, report plugin.Report
 			if err := pruneOrphans(r, preOrphans); err != nil {
 				return err
 			}
+		}
+	}
+
+	if len(d.Add) > 0 {
+		u.Step("pacman: installing %d package(s)", len(d.Add))
+		args := append([]string{"-S", "--needed", "--noconfirm"}, d.Add...)
+		if _, err := r.Run(runner.Spec{Name: "pacman", Args: args, Sudo: true}); err != nil {
+			return fmt.Errorf("pacman -S: %w", err)
 		}
 	}
 	return nil

@@ -278,6 +278,58 @@ func TestApply_AcceptsSubsetReport(t *testing.T) {
 	}
 }
 
+func TestApply_RemovesBeforeInstalling(t *testing.T) {
+	// When replacing "quickshell" with "quickshell-git", the removal must
+	// happen before the install so the conflicting package is gone when the
+	// new one is installed.
+	stubLookPath(t, map[string]bool{"pacman": true, "yay": true})
+	stubProcessUser(t, 1000, map[string]string{})
+
+	planF := runner.NewFake()
+	planF.Respond = func(name string, args []string) (string, string, int, error) {
+		// quickshell is currently installed as a foreign package.
+		return "quickshell\n", "", 0, nil
+	}
+	a := New()
+	a.SetRunner(planF.Runner)
+
+	cfg := &config.Config{
+		Settings: config.Settings{AURHelper: "yay"},
+		AUR:      config.AUR{Packages: []string{"quickshell-git"}},
+	}
+	// State records that bigkis previously declared quickshell.
+	st := &state.State{}
+	if err := st.Set("aur", []string{"quickshell"}); err != nil {
+		t.Fatalf("seed state: %v", err)
+	}
+	report, err := a.Plan(cfg, st)
+	if err != nil {
+		t.Fatalf("Plan: %v", err)
+	}
+
+	applyF := runner.NewFake()
+	if err := a.Apply(cfg, st, report, applyF.Runner, silentUI()); err != nil {
+		t.Fatalf("Apply: %v", err)
+	}
+	if len(applyF.Calls) != 2 {
+		t.Fatalf("expected 2 calls (remove then install), got %d: %+v", len(applyF.Calls), applyF.Calls)
+	}
+	// First call must be the removal.
+	if applyF.Calls[0].Args[0] != "-Rns" {
+		t.Errorf("expected first call to be removal (-Rns), got args: %v", applyF.Calls[0].Args)
+	}
+	if applyF.Calls[0].Args[len(applyF.Calls[0].Args)-1] != "quickshell" {
+		t.Errorf("expected first call to remove quickshell, got args: %v", applyF.Calls[0].Args)
+	}
+	// Second call must be the install.
+	if applyF.Calls[1].Args[0] != "-S" {
+		t.Errorf("expected second call to be install (-S), got args: %v", applyF.Calls[1].Args)
+	}
+	if applyF.Calls[1].Args[len(applyF.Calls[1].Args)-1] != "quickshell-git" {
+		t.Errorf("expected second call to install quickshell-git, got args: %v", applyF.Calls[1].Args)
+	}
+}
+
 func TestUpgrade_RunsSuaAsSudoUser(t *testing.T) {
 	stubLookPath(t, map[string]bool{"pacman": true, "yay": true})
 	stubProcessUser(t, 0, map[string]string{"SUDO_USER": "alice"})

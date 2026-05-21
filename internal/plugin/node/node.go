@@ -165,16 +165,18 @@ func (n *Node) Apply(cfg *config.Config, st *state.State, report plugin.Report, 
 		}
 		any = true
 
-		if len(d.Add) > 0 {
-			u.Step("node: installing %d package(s) via %s", len(d.Add), m)
-			if _, err := r.Run(runner.Spec{Name: m, Args: installArgs(m, d.Add)}); err != nil {
-				return fmt.Errorf("%s install: %w", m, err)
-			}
-		}
+		// Remove before installing so that conflicting packages are gone
+		// before the replacement is installed.
 		if len(d.Remove) > 0 {
 			u.Step("node: removing %d package(s) via %s", len(d.Remove), m)
 			if _, err := r.Run(runner.Spec{Name: m, Args: removeArgs(m, d.Remove)}); err != nil {
 				return fmt.Errorf("%s remove: %w", m, err)
+			}
+		}
+		if len(d.Add) > 0 {
+			u.Step("node: installing %d package(s) via %s", len(d.Add), m)
+			if _, err := r.Run(runner.Spec{Name: m, Args: installArgs(m, d.Add)}); err != nil {
+				return fmt.Errorf("%s install: %w", m, err)
 			}
 		}
 	}

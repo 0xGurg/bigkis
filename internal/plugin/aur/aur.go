@@ -169,19 +169,23 @@ func (a *AUR) Apply(cfg *config.Config, st *state.State, report plugin.Report, r
 	if err != nil {
 		return err
 	}
-	if len(d.Add) > 0 {
-		u.Step("aur: installing %d package(s) via %s", len(d.Add), a.helper)
-		args := append([]string{"-S", "--needed", "--noconfirm"}, d.Add...)
-		if _, err := r.Run(runner.Spec{Name: a.helper, Args: args, User: helperUser}); err != nil {
-			return fmt.Errorf("%s -S: %w", a.helper, err)
-		}
-	}
-
+	// Remove before installing so that conflicting packages (e.g. replacing
+	// "quickshell" with "quickshell-git") are gone before the new package is
+	// installed. Installing first fails when the new package conflicts with
+	// the one still on disk.
 	if len(d.Remove) > 0 {
 		u.Step("aur: removing %d package(s) via %s", len(d.Remove), a.helper)
 		args := append([]string{"-Rns", "--noconfirm"}, d.Remove...)
 		if _, err := r.Run(runner.Spec{Name: a.helper, Args: args, User: helperUser}); err != nil {
 			return fmt.Errorf("%s -Rns: %w", a.helper, err)
+		}
+	}
+
+	if len(d.Add) > 0 {
+		u.Step("aur: installing %d package(s) via %s", len(d.Add), a.helper)
+		args := append([]string{"-S", "--needed", "--noconfirm"}, d.Add...)
+		if _, err := r.Run(runner.Spec{Name: a.helper, Args: args, User: helperUser}); err != nil {
+			return fmt.Errorf("%s -S: %w", a.helper, err)
 		}
 	}
 	return nil

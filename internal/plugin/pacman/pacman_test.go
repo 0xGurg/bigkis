@@ -303,6 +303,73 @@ func TestApply_AcceptsSubsetReport(t *testing.T) {
 	}
 }
 
+func TestApply_DemotesBeforeInstalling(t *testing.T) {
+	// When replacing "nvidia" with "nvidia-dkms", the demote+prune must
+	// happen before the install so the conflicting package is gone.
+	stubLookPath(t)
+	planF := runner.NewFake()
+	planF.Respond = func(name string, args []string) (string, string, int, error) {
+		if name == "pacman" && len(args) == 1 && args[0] == "-Qqen" {
+			return "nvidia\n", "", 0, nil
+		}
+		return "", "", 0, nil
+	}
+	p := New()
+	p.SetRunner(planF.Runner)
+
+	cfg := &config.Config{
+		Pacman:   config.Pacman{Packages: []string{"nvidia-dkms"}},
+		Settings: config.Settings{PruneOrphans: config.PruneOrphansScoped},
+	}
+	st := &state.State{}
+	if err := st.Set("pacman", []string{"nvidia"}); err != nil {
+		t.Fatalf("seed state: %v", err)
+	}
+	report, err := p.Plan(cfg, st)
+	if err != nil {
+		t.Fatalf("Plan: %v", err)
+	}
+
+	applyF := runner.NewFake()
+	calls := 0
+	applyF.Respond = func(name string, args []string) (string, string, int, error) {
+		if name == "pacman" && len(args) == 1 && args[0] == "-Qdtq" {
+			calls++
+			switch calls {
+			case 1:
+				return "nvidia\n", "", 0, nil // pre-existing orphan
+			default:
+				return "", "", 1, runner.NewExitError(1, "exit status 1")
+			}
+		}
+		return "", "", 0, nil
+	}
+
+	if err := p.Apply(cfg, st, report, applyF.Runner, silentUI()); err != nil {
+		t.Fatalf("Apply: %v", err)
+	}
+
+	// Find the -D --asdeps and -S calls and verify order.
+	var demoteIdx, installIdx int = -1, -1
+	for i, c := range applyF.Calls {
+		if len(c.Args) > 0 && c.Args[0] == "-D" {
+			demoteIdx = i
+		}
+		if len(c.Args) > 0 && c.Args[0] == "-S" {
+			installIdx = i
+		}
+	}
+	if demoteIdx == -1 {
+		t.Fatal("expected pacman -D --asdeps call")
+	}
+	if installIdx == -1 {
+		t.Fatal("expected pacman -S call")
+	}
+	if demoteIdx > installIdx {
+		t.Errorf("demote (index %d) should come before install (index %d)", demoteIdx, installIdx)
+	}
+}
+
 func TestUpgrade_RunsSyu(t *testing.T) {
 	stubLookPath(t)
 	p := New()

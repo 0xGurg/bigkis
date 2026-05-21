@@ -190,18 +190,20 @@ func (f *Flatpak) Apply(cfg *config.Config, st *state.State, report plugin.Repor
 	}
 
 	if f.cached.system.HasChanges() {
-		if len(f.cached.system.Add) > 0 {
-			u.Step("flatpak: installing %d system app(s) from %s", len(f.cached.system.Add), remote)
-			args := append([]string{"install", "--system", "--noninteractive", "--assumeyes", remote}, f.cached.system.Add...)
-			if _, err := r.Run(runner.Spec{Name: "flatpak", Args: args, Sudo: true}); err != nil {
-				return fmt.Errorf("flatpak install system: %w", err)
-			}
-		}
+		// Remove before installing so that conflicting apps are gone before
+		// the replacement is installed.
 		if len(f.cached.system.Remove) > 0 {
 			u.Step("flatpak: removing %d system app(s)", len(f.cached.system.Remove))
 			args := append([]string{"uninstall", "--system", "--noninteractive", "--assumeyes"}, f.cached.system.Remove...)
 			if _, err := r.Run(runner.Spec{Name: "flatpak", Args: args, Sudo: true}); err != nil {
 				return fmt.Errorf("flatpak uninstall system: %w", err)
+			}
+		}
+		if len(f.cached.system.Add) > 0 {
+			u.Step("flatpak: installing %d system app(s) from %s", len(f.cached.system.Add), remote)
+			args := append([]string{"install", "--system", "--noninteractive", "--assumeyes", remote}, f.cached.system.Add...)
+			if _, err := r.Run(runner.Spec{Name: "flatpak", Args: args, Sudo: true}); err != nil {
+				return fmt.Errorf("flatpak install system: %w", err)
 			}
 		}
 	}
@@ -219,18 +221,18 @@ func (f *Flatpak) Apply(cfg *config.Config, st *state.State, report plugin.Repor
 		if !d.HasChanges() {
 			continue
 		}
-		if len(d.Add) > 0 {
-			u.Step("flatpak: installing %d app(s) for user %s from %s", len(d.Add), username, remote)
-			args := append([]string{"install", "--user", "--noninteractive", "--assumeyes", remote}, d.Add...)
-			if _, err := r.Run(runner.Spec{Name: "flatpak", Args: args, User: username}); err != nil {
-				return fmt.Errorf("flatpak install user %s: %w", username, err)
-			}
-		}
 		if len(d.Remove) > 0 {
 			u.Step("flatpak: removing %d app(s) for user %s", len(d.Remove), username)
 			args := append([]string{"uninstall", "--user", "--noninteractive", "--assumeyes"}, d.Remove...)
 			if _, err := r.Run(runner.Spec{Name: "flatpak", Args: args, User: username}); err != nil {
 				return fmt.Errorf("flatpak uninstall user %s: %w", username, err)
+			}
+		}
+		if len(d.Add) > 0 {
+			u.Step("flatpak: installing %d app(s) for user %s from %s", len(d.Add), username, remote)
+			args := append([]string{"install", "--user", "--noninteractive", "--assumeyes", remote}, d.Add...)
+			if _, err := r.Run(runner.Spec{Name: "flatpak", Args: args, User: username}); err != nil {
+				return fmt.Errorf("flatpak install user %s: %w", username, err)
 			}
 		}
 	}
