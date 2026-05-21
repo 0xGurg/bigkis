@@ -25,13 +25,17 @@ import (
 type PluginStatus struct {
 	Name      string
 	Available bool
-	Error     string // short error message when unavailable
-	Report    plugin.Report
+	Error     string               // short error message when unavailable
+	Report    plugin.Report        // drift operations (add/remove)
+	Upgrades  plugin.UpgradeReport // pending upgrades (OpUpdate only)
 }
 
 // HasChanges returns true when the plugin is available and its report
 // contains at least one pending operation.
 func (ps PluginStatus) HasChanges() bool { return ps.Available && ps.Report.HasChanges() }
+
+// HasUpgrades returns true when the plugin has pending upgrades.
+func (ps PluginStatus) HasUpgrades() bool { return ps.Available && ps.Upgrades.HasUpgrades() }
 
 // ──────────────────────────────────────────────
 // Key bindings
@@ -64,11 +68,17 @@ func (p pluginItem) Title() string {
 	switch {
 	case !p.status.Available:
 		return fmt.Sprintf("%-12s %s", p.status.Name, tui.Theme.Error.Render("unavailable"))
-	case !p.status.HasChanges():
+	case !p.status.HasChanges() && !p.status.HasUpgrades():
 		return fmt.Sprintf("%-12s %s", p.status.Name, tui.Theme.Add.Render("in sync"))
 	default:
-		count := len(p.status.Report.Operations)
-		return fmt.Sprintf("%-12s %s", p.status.Name, tui.Theme.Warn.Render(fmt.Sprintf("%d changes", count)))
+		var parts []string
+		if p.status.HasChanges() {
+			parts = append(parts, fmt.Sprintf("%d changes", len(p.status.Report.Operations)))
+		}
+		if p.status.HasUpgrades() {
+			parts = append(parts, fmt.Sprintf("%d upgrades", len(p.status.Upgrades.Operations)))
+		}
+		return fmt.Sprintf("%-12s %s", p.status.Name, tui.Theme.Warn.Render(strings.Join(parts, " · ")))
 	}
 }
 func (p pluginItem) Description() string {
@@ -224,11 +234,13 @@ func (m *statusDashboardModel) View() string {
 func (m *statusDashboardModel) statusBarView() string {
 	var changes int
 	changedPlugins := 0
+	var totalUpgrades int
 	for _, ps := range m.plugins {
 		if ps.HasChanges() {
 			changedPlugins++
 			changes += len(ps.Report.Operations)
 		}
+		totalUpgrades += len(ps.Upgrades.Operations)
 	}
 
 	configPart := fmt.Sprintf("config: %s", m.configPath)
@@ -237,9 +249,15 @@ func (m *statusDashboardModel) statusBarView() string {
 		driftPart = "drift: in sync"
 	}
 
-	return tui.Theme.Title.Render("Status Dashboard") + "  " +
-		tui.Theme.Dim.Render(configPart) + "  " +
-		tui.Theme.Dim.Render(driftPart)
+	var parts []string
+	parts = append(parts, tui.Theme.Title.Render("Status Dashboard"))
+	parts = append(parts, tui.Theme.Dim.Render(configPart))
+	parts = append(parts, tui.Theme.Dim.Render(driftPart))
+	if totalUpgrades > 0 {
+		parts = append(parts, tui.Theme.Warn.Render(fmt.Sprintf("%d upgrades available", totalUpgrades)))
+	}
+
+	return strings.Join(parts, "  ")
 }
 
 // ──────────────────────────────────────────────
@@ -267,21 +285,24 @@ func (m *statusDashboardModel) updateViewport(idx int) {
 		return
 	}
 
-	if !ps.HasChanges() {
+	if !ps.HasChanges() && !ps.HasUpgrades() {
 		b.WriteString(tui.Theme.Add.Render("in sync"))
 		m.viewport.SetContent(b.String())
 		m.viewport.GotoTop()
 		return
 	}
 
-	// Group by kind: adds first, then removes
-	var adds, removes []plugin.Operation
+	// Group by kind: adds first, then removes, then upgrades
+	var adds, removes, upgrades []plugin.Operation
 	for _, op := range ps.Report.Operations {
 		if op.Kind == plugin.OpAdd {
 			adds = append(adds, op)
 		} else {
 			removes = append(removes, op)
 		}
+	}
+	for _, op := range ps.Upgrades.Operations {
+		upgrades = append(upgrades, op)
 	}
 
 	if len(adds) > 0 {
@@ -306,6 +327,21 @@ func (m *statusDashboardModel) updateViewport(idx int) {
 			label := op.Target
 			if op.Detail != "" {
 				label = fmt.Sprintf("%s (%s)", op.Target, op.Detail)
+			}
+			b.WriteString("  ")
+			b.WriteString(label)
+			b.WriteString("\n")
+		}
+		b.WriteString("\n")
+	}
+
+	if len(upgrades) > 0 {
+		b.WriteString(tui.Theme.Warn.Render("↑ upgrades"))
+		b.WriteString("\n")
+		for _, op := range upgrades {
+			label := op.Target
+			if op.Detail != "" {
+				label = fmt.Sprintf("%s  %s", op.Target, op.Detail)
 			}
 			b.WriteString("  ")
 			b.WriteString(label)

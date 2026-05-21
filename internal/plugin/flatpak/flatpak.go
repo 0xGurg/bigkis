@@ -176,6 +176,69 @@ func (f *Flatpak) Upgrade(cfg *config.Config, st *state.State, r *runner.Runner,
 	return nil
 }
 
+func (f *Flatpak) PendingUpgrades(cfg *config.Config, r *runner.Runner) (plugin.UpgradeReport, error) {
+	if !runner.HasCommand("flatpak") {
+		return plugin.UpgradeReport{Plugin: f.Name()}, nil
+	}
+
+	var ops []plugin.Operation
+
+	// System upgrades
+	out, err := r.Capture("flatpak", "remote-ls", "--updates", "--system", "--app")
+	if err != nil {
+		return plugin.UpgradeReport{}, fmt.Errorf("flatpak remote-ls --system --updates: %w", err)
+	}
+	for _, line := range strings.Split(out, "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" || strings.HasPrefix(line, "Application ID") {
+			continue
+		}
+		cols := strings.Split(line, "\t")
+		if len(cols) < 3 {
+			continue
+		}
+		ops = append(ops, plugin.Operation{
+			Kind:   plugin.OpUpdate,
+			Target: cols[0],
+			Detail: "→ " + cols[2] + " (system)",
+		})
+	}
+
+	// Per-user upgrades
+	usernames := make([]string, 0, len(cfg.Flatpak.UserPackages))
+	for name := range cfg.Flatpak.UserPackages {
+		usernames = append(usernames, name)
+	}
+	sort.Strings(usernames)
+	for _, username := range usernames {
+		if !safeUsername.MatchString(username) {
+			continue
+		}
+		out, err := r.Capture("sudo", "-u", username, "flatpak", "remote-ls", "--updates", "--user", "--app")
+		if err != nil {
+			// Best-effort: user may not have flatpak configured.
+			continue
+		}
+		for _, line := range strings.Split(out, "\n") {
+			line = strings.TrimSpace(line)
+			if line == "" || strings.HasPrefix(line, "Application ID") {
+				continue
+			}
+			cols := strings.Split(line, "\t")
+			if len(cols) < 3 {
+				continue
+			}
+			ops = append(ops, plugin.Operation{
+				Kind:   plugin.OpUpdate,
+				Target: cols[0],
+				Detail: "→ " + cols[2] + " (user " + username + ")",
+			})
+		}
+	}
+
+	return plugin.UpgradeReport{Plugin: f.Name(), Operations: ops}, nil
+}
+
 func (f *Flatpak) Apply(cfg *config.Config, st *state.State, report plugin.Report, r *runner.Runner, u *ui.UI) error {
 	if f.cached == nil {
 		return fmt.Errorf("flatpak: Apply called before Plan")

@@ -140,6 +140,29 @@ func (n *Node) Upgrade(cfg *config.Config, st *state.State, r *runner.Runner, u 
 	return nil
 }
 
+// PendingUpgrades probes which globally-installed node packages have newer
+// versions available. Best-effort: managers that don't support an outdated
+// query are silently skipped.
+func (n *Node) PendingUpgrades(cfg *config.Config, r *runner.Runner) (plugin.UpgradeReport, error) {
+	declaredByMgr := groupDeclared(cfg)
+	managers := allManagers(declaredByMgr, nil)
+
+	rep := plugin.UpgradeReport{Plugin: n.Name()}
+
+	for _, m := range managers {
+		if len(declaredByMgr[m]) == 0 {
+			continue
+		}
+		if !runner.HasCommand(m) {
+			continue
+		}
+		upgrades := pendingUpgradesForMgr(r, m)
+		rep.Operations = append(rep.Operations, upgrades...)
+	}
+
+	return rep, nil
+}
+
 func (n *Node) Apply(cfg *config.Config, st *state.State, report plugin.Report, r *runner.Runner, u *ui.UI) error {
 	if n.cached == nil {
 		return fmt.Errorf("node: Apply called before Plan")
@@ -372,4 +395,97 @@ func probeYarn(r *runner.Runner) ([]string, error) {
 		}
 	}
 	return names, nil
+}
+
+// npmOutdatedEntry represents one package entry in npm/pnpm outdated --json output.
+type npmOutdatedEntry struct {
+	Current string `json:"current"`
+	Wanted  string `json:"wanted"`
+	Latest  string `json:"latest"`
+}
+
+// pendingUpgradesForMgr dispatches to the appropriate outdated-query function
+// for the given manager. Returns nil on any failure (best-effort).
+func pendingUpgradesForMgr(r *runner.Runner, mgr string) []plugin.Operation {
+	switch mgr {
+	case mgrNPM, mgrPNPM:
+		return pendingUpgradesNPMLike(r, mgr)
+	case mgrYARN:
+		return pendingUpgradesYarn(r)
+	default:
+		return nil
+	}
+}
+
+// pendingUpgradesNPMLike runs `<mgr> outdated -g --json` and parses the JSON
+// output. Both npm and pnpm support this flag set. npm exits non-zero when
+// outdated packages exist but still emits valid JSON; we parse stdout even on
+// error (same pattern as probeNPMLike). Returns nil if the command or parse
+// fails (best-effort).
+func pendingUpgradesNPMLike(r *runner.Runner, mgr string) []plugin.Operation {
+	out, _ := r.Capture(mgr, "outdated", "-g", "--json")
+	if out == "" {
+		return nil
+	}
+	var entries map[string]npmOutdatedEntry
+	if err := json.Unmarshal([]byte(out), &entries); err != nil {
+		return nil
+	}
+	// Sort names for deterministic output.
+	names := make([]string, 0, len(entries))
+	for name := range entries {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+
+	var ops []plugin.Operation
+	for _, name := range names {
+		entry := entries[name]
+		current := entry.Current
+		if current == "" {
+			current = "?"
+		}
+		latest := entry.Latest
+		if latest == "" {
+			latest = "?"
+		}
+		ops = append(ops, plugin.Operation{
+			Kind:   plugin.OpUpdate,
+			Target: name,
+			Detail: current + " → " + latest + " via " + mgr,
+		})
+	}
+	return ops
+}
+
+// pendingUpgradesYarn runs `yarn outdated` and parses the table output. Yarn
+// Berry (v2+) removed this command, so we silently return nil on any failure.
+func pendingUpgradesYarn(r *runner.Runner) []plugin.Operation {
+	out, err := r.Capture("yarn", "outdated")
+	if err != nil || out == "" {
+		return nil
+	}
+	lines := strings.Split(out, "\n")
+	var ops []plugin.Operation
+	for _, line := range lines {
+		line = strings.TrimSpace(line)
+		if line == "" || strings.HasPrefix(line, "Package") {
+			continue
+		}
+		parts := strings.Fields(line)
+		if len(parts) >= 4 {
+			name := parts[0]
+			current := parts[1]
+			latest := parts[3]
+			ops = append(ops, plugin.Operation{
+				Kind:   plugin.OpUpdate,
+				Target: name,
+				Detail: current + " → " + latest + " via yarn",
+			})
+		}
+	}
+	if len(ops) == 0 {
+		return nil
+	}
+	return ops
 }

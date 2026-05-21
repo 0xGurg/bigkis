@@ -60,6 +60,9 @@ func (p *fakePlugin) PersistState(cfg *config.Config, st *state.State) error {
 	}
 	return st.Set(p.name, p.stateValue)
 }
+func (p *fakePlugin) PendingUpgrades(cfg *config.Config, r *runner.Runner) (plugin.UpgradeReport, error) {
+	return plugin.UpgradeReport{Plugin: p.name}, nil
+}
 
 func TestApplyStages_CheckpointsAfterEachPlugin(t *testing.T) {
 	statePath := filepath.Join(t.TempDir(), "state.json")

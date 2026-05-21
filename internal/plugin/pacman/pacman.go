@@ -79,6 +79,49 @@ func (p *Pacman) Upgrade(cfg *config.Config, st *state.State, r *runner.Runner, 
 	return nil
 }
 
+// PendingUpgrades probes which native packages have newer versions available
+// using pacman -Qu. Output format: "package oldver -> newver". pacman -Qu
+// exits 0 with empty output when no upgrades are pending; exits 1 when the
+// package database hasn't been synced (treated as "no info available").
+func (p *Pacman) PendingUpgrades(cfg *config.Config, r *runner.Runner) (plugin.UpgradeReport, error) {
+	_ = cfg
+	out, err := r.Capture("pacman", "-Qu")
+	if err != nil {
+		// pacman -Qu exits 1 when databases are stale (no -Sy run). Treat as
+		// "no upgrade info available" rather than a hard error.
+		if runner.IsExitCode(err, 1) && out == "" {
+			return plugin.UpgradeReport{Plugin: p.Name()}, nil
+		}
+		return plugin.UpgradeReport{}, fmt.Errorf("pacman -Qu: %w", err)
+	}
+	rep := plugin.UpgradeReport{Plugin: p.Name()}
+	for _, line := range splitLines(out) {
+		name, detail := parseUpgradeLine(line)
+		if name == "" {
+			continue
+		}
+		rep.Operations = append(rep.Operations, plugin.Operation{
+			Kind:   plugin.OpUpdate,
+			Target: name,
+			Detail: detail,
+		})
+	}
+	return rep, nil
+}
+
+// parseUpgradeLine parses "package oldver -> newver" output from pacman -Qu.
+func parseUpgradeLine(line string) (name string, detail string) {
+	// Format: "neovim 0.9.5-1 -> 0.10.0-1"
+	parts := strings.SplitN(line, " ", 2)
+	if len(parts) < 2 {
+		return line, ""
+	}
+	name = parts[0]
+	// The rest is "oldver -> newver"
+	verPart := strings.TrimSpace(parts[1])
+	return name, verPart
+}
+
 func (p *Pacman) Apply(cfg *config.Config, st *state.State, report plugin.Report, r *runner.Runner, u *ui.UI) error {
 	if p.cachedDiff == nil {
 		return fmt.Errorf("pacman: Apply called before Plan")

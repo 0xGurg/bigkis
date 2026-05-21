@@ -42,6 +42,13 @@ type Plugin interface {
 	// return nil. Called before Apply when the orchestrator is in upgrade mode.
 	Upgrade(cfg *config.Config, st *state.State, r *runner.Runner, u *ui.UI) error
 
+	// PendingUpgrades probes which installed packages have newer versions
+	// available without executing any upgrades. Returns an UpgradeReport
+	// containing OpUpdate operations with version details in Detail
+	// (e.g. "1.0.0 → 2.0.0"). Best-effort: if a plugin cannot detect
+	// pending upgrades, return an empty UpgradeReport with no error.
+	PendingUpgrades(cfg *config.Config, r *runner.Runner) (UpgradeReport, error)
+
 	// PersistState writes the now-current declared set into st under Name().
 	// Called only after a successful Apply.
 	PersistState(cfg *config.Config, st *state.State) error
@@ -66,11 +73,24 @@ type Operation struct {
 type OpKind int
 
 const (
-	OpAdd OpKind = iota
+	OpAdd    OpKind = iota
 	OpRemove
+	OpUpdate // installed package has a newer version available
 )
 
 func (r Report) HasChanges() bool { return len(r.Operations) > 0 }
+
+// UpgradeReport lists packages that have newer versions available. It is
+// separate from Report because upgrades are a different concern from drift
+// (declared vs actual): UpgradeReport never flows into Apply, Rollback, or
+// the plan-diff validation chain. The TUI and JSON output merge both for
+// display, but the orchestration layer treats them as distinct.
+type UpgradeReport struct {
+	Plugin     string
+	Operations []Operation // all OpUpdate
+}
+
+func (r UpgradeReport) HasUpgrades() bool { return len(r.Operations) > 0 }
 
 // Registry is a simple ordered set of plugins keyed by name.
 type Registry struct {

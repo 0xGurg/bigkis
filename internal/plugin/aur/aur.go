@@ -144,6 +144,59 @@ func (a *AUR) Upgrade(cfg *config.Config, st *state.State, r *runner.Runner, u *
 	return nil
 }
 
+// PendingUpgrades probes which foreign packages have newer versions available
+// using <helper> -Qua. Output format: "package oldver -> newver". The helper
+// exits with code 1 and empty stdout when no upgrades are available, which we
+// treat as "no upgrades" rather than an error.
+func (a *AUR) PendingUpgrades(cfg *config.Config, r *runner.Runner) (plugin.UpgradeReport, error) {
+	helper := cfg.Settings.AURHelper
+	if helper == "" {
+		return plugin.UpgradeReport{Plugin: a.Name()}, nil
+	}
+	helperUser, err := resolveHelperUser()
+	if err != nil {
+		return plugin.UpgradeReport{}, err
+	}
+	res, err := r.Run(runner.Spec{Name: helper, Args: []string{"-Qua"}, User: helperUser, CaptureOutput: true})
+	if err != nil {
+		// The helper exits 1 with empty output when nothing to upgrade.
+		if runner.IsExitCode(err, 1) && res.Stdout == "" {
+			return plugin.UpgradeReport{Plugin: a.Name()}, nil
+		}
+		return plugin.UpgradeReport{}, fmt.Errorf("%s -Qua: %w", helper, err)
+	}
+	rep := plugin.UpgradeReport{Plugin: a.Name()}
+	for _, line := range strings.Split(res.Stdout, "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		name, detail := parseUpgradeLine(line)
+		if name == "" {
+			continue
+		}
+		rep.Operations = append(rep.Operations, plugin.Operation{
+			Kind:   plugin.OpUpdate,
+			Target: name,
+			Detail: detail,
+		})
+	}
+	return rep, nil
+}
+
+// parseUpgradeLine parses "package oldver -> newver" output from pacman -Qu
+// or an AUR helper's -Qua.
+func parseUpgradeLine(line string) (name string, detail string) {
+	// Format: "neovim 0.9.5-1 -> 0.10.0-1"
+	parts := strings.SplitN(line, " ", 2)
+	if len(parts) < 2 {
+		return line, ""
+	}
+	name = parts[0]
+	verPart := strings.TrimSpace(parts[1])
+	return name, verPart
+}
+
 func (a *AUR) Apply(cfg *config.Config, st *state.State, report plugin.Report, r *runner.Runner, u *ui.UI) error {
 	if a.cachedDiff == nil {
 		return fmt.Errorf("aur: Apply called before Plan")

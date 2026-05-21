@@ -31,9 +31,10 @@ import (
 
 // PluginPlan holds the plan result for one plugin in the apply review.
 type PluginPlan struct {
-	Name   string
-	InSync bool // true when the plugin has no changes
-	Report plugin.Report
+	Name    string
+	InSync  bool               // true when the plugin has no changes
+	Report  plugin.Report      // drift operations (add/remove)
+	Upgrades plugin.UpgradeReport // pending upgrades (OpUpdate only)
 }
 
 // checkedOp is a single operation with a checkbox state (Phase 5 selective).
@@ -51,6 +52,8 @@ func (c checkedOp) Title() string {
 	prefix := "+"
 	if c.op.Kind == plugin.OpRemove {
 		prefix = "-"
+	} else if c.op.Kind == plugin.OpUpdate {
+		prefix = "↑"
 	}
 	label := c.op.Target
 	if c.op.Detail != "" {
@@ -107,11 +110,17 @@ type pluginPlanItem struct {
 
 func (p pluginPlanItem) FilterValue() string { return p.plan.Name }
 func (p pluginPlanItem) Title() string {
-	if p.plan.InSync {
+	if p.plan.InSync && !p.plan.Upgrades.HasUpgrades() {
 		return fmt.Sprintf("%-12s %s", p.plan.Name, tui.Theme.Add.Render("in sync"))
 	}
-	count := len(p.plan.Report.Operations)
-	return fmt.Sprintf("%-12s %s", p.plan.Name, tui.Theme.Warn.Render(fmt.Sprintf("%d changes", count)))
+	var parts []string
+	if !p.plan.InSync {
+		parts = append(parts, fmt.Sprintf("%d changes", len(p.plan.Report.Operations)))
+	}
+	if p.plan.Upgrades.HasUpgrades() {
+		parts = append(parts, fmt.Sprintf("%d upgrades", len(p.plan.Upgrades.Operations)))
+	}
+	return fmt.Sprintf("%-12s %s", p.plan.Name, tui.Theme.Warn.Render(strings.Join(parts, " · ")))
 }
 func (p pluginPlanItem) Description() string { return "" }
 
@@ -125,6 +134,7 @@ type checkboxDelegate struct {
 	checkedStyle    lipgloss.Style
 	addStyle        lipgloss.Style
 	removeStyle     lipgloss.Style
+	upgradeStyle    lipgloss.Style
 }
 
 func (d checkboxDelegate) Height() int                             { return 1 }
@@ -145,6 +155,8 @@ func (d checkboxDelegate) Render(w io.Writer, m list.Model, index int, item list
 	prefix := d.addStyle.Render("+")
 	if co.op.Kind == plugin.OpRemove {
 		prefix = d.removeStyle.Render("-")
+	} else if co.op.Kind == plugin.OpUpdate {
+		prefix = d.upgradeStyle.Render("↑")
 	}
 
 	label := co.op.Target
@@ -243,6 +255,7 @@ func NewApplyReview(configPath string, plans []PluginPlan, dryRun bool, willUpgr
 			checkedStyle:    tui.Theme.Add,
 			addStyle:        tui.Theme.Add,
 			removeStyle:     tui.Theme.Remove,
+			upgradeStyle:    tui.Theme.Warn,
 		}
 
 		m.opList = list.New([]list.Item{}, m.opDelegate, 50, 20)
@@ -467,11 +480,13 @@ func (m *applyReviewModel) headerView() string {
 	// Count totals
 	var totalChanges int
 	changedPlugins := 0
+	var totalUpgrades int
 	for _, p := range m.plans {
 		if !p.InSync {
 			changedPlugins++
 			totalChanges += len(p.Report.Operations)
 		}
+		totalUpgrades += len(p.Upgrades.Operations)
 	}
 
 	title := tui.Theme.Title.Render("Apply Review")
@@ -484,6 +499,9 @@ func (m *applyReviewModel) headerView() string {
 		var parts []string
 		if m.willUpgrade {
 			parts = append(parts, "will upgrade")
+		}
+		if totalUpgrades > 0 {
+			parts = append(parts, fmt.Sprintf("%d upgrades available", totalUpgrades))
 		}
 		if totalChanges > 0 {
 			parts = append(parts, fmt.Sprintf("%d changes across %d plugins", totalChanges, changedPlugins))
@@ -512,21 +530,24 @@ func (m *applyReviewModel) updateViewport(idx int) {
 	b.WriteString(strings.Repeat("─", 40))
 	b.WriteString("\n\n")
 
-	if p.InSync {
+	if p.InSync && !p.Upgrades.HasUpgrades() {
 		b.WriteString(tui.Theme.Add.Render("in sync — no changes"))
 		m.viewport.SetContent(b.String())
 		m.viewport.GotoTop()
 		return
 	}
 
-	// Group by kind: adds first, then removes
-	var adds, removes []plugin.Operation
+	// Group by kind: adds first, then removes, then upgrades
+	var adds, removes, upgrades []plugin.Operation
 	for _, op := range p.Report.Operations {
 		if op.Kind == plugin.OpAdd {
 			adds = append(adds, op)
 		} else {
 			removes = append(removes, op)
 		}
+	}
+	for _, op := range p.Upgrades.Operations {
+		upgrades = append(upgrades, op)
 	}
 
 	if len(adds) > 0 {
@@ -551,6 +572,21 @@ func (m *applyReviewModel) updateViewport(idx int) {
 			label := op.Target
 			if op.Detail != "" {
 				label = fmt.Sprintf("%s (%s)", op.Target, op.Detail)
+			}
+			b.WriteString("  ")
+			b.WriteString(label)
+			b.WriteString("\n")
+		}
+		b.WriteString("\n")
+	}
+
+	if len(upgrades) > 0 {
+		b.WriteString(tui.Theme.Warn.Render("↑ upgrades"))
+		b.WriteString("\n")
+		for _, op := range upgrades {
+			label := op.Target
+			if op.Detail != "" {
+				label = fmt.Sprintf("%s  %s", op.Target, op.Detail)
 			}
 			b.WriteString("  ")
 			b.WriteString(label)
@@ -603,14 +639,19 @@ func (m *applyReviewModel) rebuildOpItemsForPlugin(pluginIdx int) {
 		return
 	}
 	p := m.plans[pluginIdx]
-	if p.InSync {
+	if p.InSync && !p.Upgrades.HasUpgrades() {
 		m.opItems = nil
 		m.opList.SetItems([]list.Item{})
 		return
 	}
 
-	m.opItems = make([]checkedOp, len(p.Report.Operations))
-	for i, op := range p.Report.Operations {
+	// Combine drift ops and upgrade ops
+	var allOps []plugin.Operation
+	allOps = append(allOps, p.Report.Operations...)
+	allOps = append(allOps, p.Upgrades.Operations...)
+
+	m.opItems = make([]checkedOp, len(allOps))
+	for i, op := range allOps {
 		key := fmt.Sprintf("%d:%s", op.Kind, op.Target)
 		checked := true // default: checked
 		if m.checkedOps[pluginIdx] != nil {
@@ -647,9 +688,10 @@ func (m *applyReviewModel) allOpsChecked() bool {
 // considered checked if it is not yet present in checkedOps (default) or is explicitly true.
 func (m *applyReviewModel) hasAnyChecked() bool {
 	for pi, p := range m.plans {
-		if p.InSync {
+		if p.InSync && !p.Upgrades.HasUpgrades() {
 			continue
 		}
+		// Check drift ops
 		for _, op := range p.Report.Operations {
 			key := fmt.Sprintf("%d:%s", op.Kind, op.Target)
 			if m.checkedOps[pi] != nil {
@@ -663,6 +705,19 @@ func (m *applyReviewModel) hasAnyChecked() bool {
 			// Not stored in map yet — default to checked
 			return true
 		}
+		// Check upgrade ops
+		for _, op := range p.Upgrades.Operations {
+			key := fmt.Sprintf("%d:%s", op.Kind, op.Target)
+			if m.checkedOps[pi] != nil {
+				if checked, ok := m.checkedOps[pi][key]; ok {
+					if checked {
+						return true
+					}
+					continue
+				}
+			}
+			return true
+		}
 	}
 	return false
 }
@@ -670,7 +725,8 @@ func (m *applyReviewModel) hasAnyChecked() bool {
 // buildFilteredPlans constructs m.filteredPlans from m.plans using the
 // per-operation checked state stored in m.checkedOps. In-sync plugins
 // are passed through unchanged. Out-of-sync plugins only include their
-// checked operations.
+// checked drift operations. Upgrade operations are informational only and
+// are not included in the filtered Report (they don't flow into Apply).
 func (m *applyReviewModel) buildFilteredPlans() {
 	m.filteredPlans = make([]PluginPlan, 0, len(m.plans))
 	for pi, p := range m.plans {
@@ -695,9 +751,10 @@ func (m *applyReviewModel) buildFilteredPlans() {
 		}
 
 		fp := PluginPlan{
-			Name:   p.Name,
-			InSync: len(checkedOps) == 0,
-			Report: plugin.Report{Operations: checkedOps},
+			Name:     p.Name,
+			InSync:   len(checkedOps) == 0,
+			Report:   plugin.Report{Operations: checkedOps},
+			Upgrades: p.Upgrades,
 		}
 		m.filteredPlans = append(m.filteredPlans, fp)
 	}

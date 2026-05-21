@@ -113,6 +113,7 @@ func statusCommand() *cli.Command {
 			&cli.BoolFlag{Name: "exit-on-drift", Usage: "exit with code 3 instead of 0 when drift is detected"},
 			&cli.StringSliceFlag{Name: "only", Usage: "only check these plugins (comma-separated)"},
 			&cli.StringSliceFlag{Name: "skip", Usage: "skip these plugins (comma-separated)"},
+			&cli.BoolFlag{Name: "upgrades", Usage: "also show packages with newer versions available (may be slow — requires network)"},
 		},
 		Action: runStatus,
 	}
@@ -379,6 +380,20 @@ func runStatus(c *cli.Context) error {
 		statuses = append(statuses, ps)
 	}
 
+	// ── Collect pending upgrades (opt-in via --upgrades) ──
+	if c.Bool("upgrades") {
+		r := runner.New(false)
+		upgradeReports := collectUpgrades(plugins, cfg, r, u)
+		for i := range statuses {
+			for _, ur := range upgradeReports {
+				if ur.Plugin == statuses[i].Name {
+					statuses[i].Upgrades = ur
+					break
+				}
+			}
+		}
+	}
+
 	// ── TUI branch ──
 	if !c.Bool("exit-on-drift") && tui.ShouldUse(os.Stdout, os.Stdin, c.Bool("json"), c.Bool("quiet")) {
 		model := status.NewStatusDashboard(cfg.Path, statuses)
@@ -402,13 +417,25 @@ func runStatus(c *cli.Context) error {
 			continue
 		}
 		report := ps.Report
-		if !report.HasChanges() {
+		if !report.HasChanges() && !ps.Upgrades.HasUpgrades() {
 			u.Info("%s: in sync", ps.Name)
 			continue
 		}
-		hasChanges = true
-		u.Info("%s: %d change(s)", ps.Name, len(report.Operations))
-		printReport(u, report)
+		if report.HasChanges() {
+			hasChanges = true
+			u.Info("%s: %d change(s)", ps.Name, len(report.Operations))
+			printReport(u, report)
+		}
+		if ps.Upgrades.HasUpgrades() {
+			u.Info("%s: %d upgrade(s) available", ps.Name, len(ps.Upgrades.Operations))
+			for _, op := range ps.Upgrades.Operations {
+				label := op.Target
+				if op.Detail != "" {
+					label = fmt.Sprintf("%s  %s", op.Target, op.Detail)
+				}
+				u.Step("  ↑ %s", label)
+			}
+		}
 	}
 	if !hasChanges {
 		// Don't claim "system matches declaration" when at least one plugin
@@ -446,6 +473,7 @@ func runStatusJSON(c *cli.Context) error {
 		AvailableEr string   `json:"availableError,omitempty"`
 		InSync      bool     `json:"inSync"`
 		Operations  []opJSON `json:"operations"`
+		Upgrades    []opJSON `json:"upgrades,omitempty"`
 	}
 	type reportJSON struct {
 		ConfigPath string `json:"configPath"`
@@ -486,6 +514,15 @@ func runStatusJSON(c *cli.Context) error {
 				kind = "remove"
 			}
 			pj.Operations = append(pj.Operations, opJSON{Kind: kind, Target: op.Target, Detail: op.Detail})
+		}
+		// Collect pending upgrades when --upgrades is set
+		if c.Bool("upgrades") {
+			ur, err := p.PendingUpgrades(cfg, runner.New(false))
+			if err == nil {
+				for _, op := range ur.Operations {
+					pj.Upgrades = append(pj.Upgrades, opJSON{Kind: "upgrade", Target: op.Target, Detail: op.Detail})
+				}
+			}
 		}
 		out.Plugins = append(out.Plugins, pj)
 	}
@@ -571,21 +608,43 @@ func runApply(c *cli.Context) error {
 	// TUI plan review: replaces the text confirm prompt with an interactive review.
 	// Gated: not --dry-run (already handled), not --yes (user skipped confirm),
 	// not --json (JSON path), and terminal is interactive.
-	if !dryRun && !c.Bool("yes") && plan.overall && tui.ShouldUse(os.Stdout, os.Stdin, c.Bool("json"), c.Bool("quiet")) {
+	if !dryRun && !c.Bool("yes") && (plan.overall || !noUpgrade) && tui.ShouldUse(os.Stdout, os.Stdin, c.Bool("json"), c.Bool("quiet")) {
+		// Collect pending upgrades for TUI display
+		var upgradeReports []plugin.UpgradeReport
+		if !noUpgrade {
+			rProbe := runner.New(false)
+			upgradeReports = collectUpgrades(upgradePlugins, cfg, rProbe, u)
+		}
+
 		var plans []applyreview.PluginPlan
 		for _, s := range plan.stages {
-			plans = append(plans, applyreview.PluginPlan{
+			pp := applyreview.PluginPlan{
 				Name:   s.Plugin.Name(),
 				InSync: false,
 				Report: s.Report,
-			})
+			}
+			// Attach upgrade report for this plugin
+			for _, ur := range upgradeReports {
+				if ur.Plugin == s.Plugin.Name() {
+					pp.Upgrades = ur
+					break
+				}
+			}
+			plans = append(plans, pp)
 		}
 		for _, p := range plan.insync {
-			plans = append(plans, applyreview.PluginPlan{
+			pp := applyreview.PluginPlan{
 				Name:   p.Name(),
 				InSync: true,
 				Report: plugin.Report{},
-			})
+			}
+			for _, ur := range upgradeReports {
+				if ur.Plugin == p.Name() {
+					pp.Upgrades = ur
+					break
+				}
+			}
+			plans = append(plans, pp)
 		}
 		selective := c.Bool("select")
 		model := applyreview.NewApplyReview(cfg.Path, plans, dryRun, !noUpgrade, selective)
@@ -797,8 +856,8 @@ func persistInSync(plugins []plugin.Plugin, cfg *config.Config, st *state.State,
 // shape as `status --json` plus an explicit dryRun flag. Combine with
 // --no-rollback / --no-lock to script around bigkis.
 //
-// Pending package upgrades are not included (querying them is expensive and
-// out of scope); use `apply --dry-run` for upgrade command lines.
+// When --no-upgrade is not set, pending upgrades are also included in the
+// output under each plugin's "upgrades" key.
 //
 // Exit codes mirror status --exit-on-drift: drift produces ExitDrift (3) so
 // scripts can branch on "would-have-applied" without parsing JSON. The wiki
@@ -821,6 +880,7 @@ func runApplyJSON(c *cli.Context) error {
 		AvailableEr string   `json:"availableError,omitempty"`
 		InSync      bool     `json:"inSync"`
 		Operations  []opJSON `json:"operations"`
+		Upgrades    []opJSON `json:"upgrades,omitempty"`
 	}
 	type reportJSON struct {
 		ConfigPath string       `json:"configPath"`
@@ -830,6 +890,7 @@ func runApplyJSON(c *cli.Context) error {
 		Plugins    []pluginJSON `json:"plugins"`
 	}
 
+	noUpgrade := c.Bool("no-upgrade")
 	out := reportJSON{ConfigPath: cfg.Path, DryRun: true, InSync: true}
 	only := splitCSV(c.StringSlice("only"))
 	skip := splitCSV(c.StringSlice("skip"))
@@ -857,6 +918,15 @@ func runApplyJSON(c *cli.Context) error {
 				kind = "remove"
 			}
 			pj.Operations = append(pj.Operations, opJSON{Kind: kind, Target: op.Target, Detail: op.Detail})
+		}
+		// Collect pending upgrades when upgrades are enabled
+		if !noUpgrade {
+			ur, err := p.PendingUpgrades(cfg, runner.New(false))
+			if err == nil {
+				for _, op := range ur.Operations {
+					pj.Upgrades = append(pj.Upgrades, opJSON{Kind: "upgrade", Target: op.Target, Detail: op.Detail})
+				}
+			}
 		}
 		out.Plugins = append(out.Plugins, pj)
 	}
@@ -970,6 +1040,24 @@ func runUpgrades(plugins []plugin.Plugin, cfg *config.Config, st *state.State, r
 	return nil
 }
 
+// collectUpgrades probes each available plugin for pending upgrades and
+// returns the results. Unavailable plugins are skipped with a warning.
+func collectUpgrades(plugins []plugin.Plugin, cfg *config.Config, r *runner.Runner, u *ui.UI) []plugin.UpgradeReport {
+	var reports []plugin.UpgradeReport
+	for _, p := range plugins {
+		if err := p.Available(cfg); err != nil {
+			continue
+		}
+		report, err := p.PendingUpgrades(cfg, r)
+		if err != nil {
+			u.Warn("%s: could not check upgrades: %v", p.Name(), err)
+			continue
+		}
+		reports = append(reports, report)
+	}
+	return reports
+}
+
 // selectPlugins resolves the final ordered list of plugins, applying
 // `--only` and `--skip` on top of `settings.enabled`. Names in --only or
 // --skip that don't match an enabled plugin produce a warning so a typo
@@ -1070,7 +1158,7 @@ _bigkis_complete() {
             COMPREPLY=( $(compgen -W "--dry-run --yes --quiet --json --only --skip --no-upgrade --no-rollback --no-lock --lock --select --config" -- "$cur") )
             ;;
         status)
-            COMPREPLY=( $(compgen -W "--json --exit-on-drift --only --skip --config" -- "$cur") )
+            COMPREPLY=( $(compgen -W "--json --exit-on-drift --only --skip --upgrades --config" -- "$cur") )
             ;;
         doctor)
             COMPREPLY=( $(compgen -W "--json --config" -- "$cur") )
@@ -1108,7 +1196,7 @@ _bigkis() {
   fi
   case "$words[2]" in
     apply)      _arguments '--dry-run' '--yes' '--quiet' '--json' '--only=' '--skip=' '--no-upgrade' '--no-rollback' '--no-lock' '--lock=' '--select' '--config=' ;;
-    status)     _arguments '--json' '--exit-on-drift' '--only=' '--skip=' '--config=' ;;
+    status)     _arguments '--json' '--exit-on-drift' '--only=' '--skip=' '--upgrades' '--config=' ;;
     doctor)     _arguments '--json' '--config=' ;;
     import)     _arguments '--output=' '--only=' '--aur-helper=' '--node-manager=' '--interactive' ;;
     rollback)   _arguments '--list' '--latest' '--id=' '--yes' ;;
@@ -1144,6 +1232,7 @@ complete -c bigkis -n '__fish_seen_subcommand_from status' -l json          -d '
 complete -c bigkis -n '__fish_seen_subcommand_from status' -l exit-on-drift -d 'exit 3 on drift'
 complete -c bigkis -n '__fish_seen_subcommand_from status' -l only          -d 'plugins to include'
 complete -c bigkis -n '__fish_seen_subcommand_from status' -l skip          -d 'plugins to skip'
+complete -c bigkis -n '__fish_seen_subcommand_from status' -l upgrades      -d 'show pending upgrades'
 
 complete -c bigkis -n '__fish_seen_subcommand_from doctor' -l json          -d 'JSON output'
 
