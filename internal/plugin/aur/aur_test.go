@@ -134,11 +134,15 @@ func TestApply_UsesConfiguredHelper(t *testing.T) {
 	if err := a.Apply(cfg, &state.State{}, report, applyF.Runner, silentUI()); err != nil {
 		t.Fatalf("Apply: %v", err)
 	}
-	if len(applyF.Calls) != 1 {
-		t.Fatalf("expected 1 call, got %+v", applyF.Calls)
+	// Calls: 1) paru -Si yay-bin (conflict check), 2) paru -S (install).
+	if len(applyF.Calls) != 2 {
+		t.Fatalf("expected 2 calls, got %+v", applyF.Calls)
 	}
 	if applyF.Calls[0].Name != "paru" || applyF.Calls[0].Sudo {
 		t.Errorf("expected unsudoed paru, got %+v", applyF.Calls[0])
+	}
+	if applyF.Calls[1].Name != "paru" || applyF.Calls[1].Args[0] != "-S" {
+		t.Errorf("expected paru -S install, got %+v", applyF.Calls[1])
 	}
 }
 
@@ -210,11 +214,12 @@ func TestApply_DropsToSudoUserWhenInvokedAsRoot(t *testing.T) {
 	if err := a.Apply(cfg, &state.State{}, report, applyF.Runner, silentUI()); err != nil {
 		t.Fatalf("Apply: %v", err)
 	}
-	if len(applyF.Calls) != 1 {
-		t.Fatalf("expected 1 call, got %+v", applyF.Calls)
+	// Calls: 1) yay -Si fnm-bin (conflict check), 2) yay -S (install).
+	if len(applyF.Calls) != 2 {
+		t.Fatalf("expected 2 calls, got %+v", applyF.Calls)
 	}
-	if got := applyF.Calls[0].User; got != "alice" {
-		t.Errorf("expected helper to run as alice, got User=%q (call=%+v)", got, applyF.Calls[0])
+	if got := applyF.Calls[1].User; got != "alice" {
+		t.Errorf("expected helper to run as alice, got User=%q (call=%+v)", got, applyF.Calls[1])
 	}
 }
 
@@ -240,10 +245,11 @@ func TestApply_KeepsCurrentUserWhenInvokedUnprivileged(t *testing.T) {
 	if err := a.Apply(cfg, &state.State{}, report, applyF.Runner, silentUI()); err != nil {
 		t.Fatalf("Apply: %v", err)
 	}
-	if len(applyF.Calls) != 1 {
-		t.Fatalf("expected 1 call, got %+v", applyF.Calls)
+	// Calls: 1) yay -Si fnm-bin (conflict check), 2) yay -S (install).
+	if len(applyF.Calls) != 2 {
+		t.Fatalf("expected 2 calls, got %+v", applyF.Calls)
 	}
-	if got := applyF.Calls[0].User; got != "" {
+	if got := applyF.Calls[1].User; got != "" {
 		t.Errorf("expected helper to run as current user (User=\"\"), got %q", got)
 	}
 }
@@ -308,25 +314,47 @@ func TestApply_RemovesBeforeInstalling(t *testing.T) {
 	}
 
 	applyF := runner.NewFake()
+	// quickshell is in d.Remove (managed by bigkis), so the conflict check
+	// for d.Add won't find it installed (it was already removed above).
+	// Respond to helper -Si with no conflicts, and pacman -Q as not installed.
+	applyF.Respond = func(name string, args []string) (string, string, int, error) {
+		if name == "yay" && len(args) > 0 && args[0] == "-Si" {
+			return "Conflicts With : None\n", "", 0, nil
+		}
+		if name == "pacman" && len(args) > 0 && args[0] == "-Q" {
+			return "", "", 1, runner.NewExitError(1, "not installed")
+		}
+		return "", "", 0, nil
+	}
 	if err := a.Apply(cfg, st, report, applyF.Runner, silentUI()); err != nil {
 		t.Fatalf("Apply: %v", err)
 	}
-	if len(applyF.Calls) != 2 {
-		t.Fatalf("expected 2 calls (remove then install), got %d: %+v", len(applyF.Calls), applyF.Calls)
+	// Calls: 1) remove quickshell (-Rns), 2) helper -Si quickshell-git,
+	// 3) pacman -Q <conflict>, 4) install quickshell-git (-S).
+	// At minimum we expect remove then install.
+	var removeIdx, installIdx int = -1, -1
+	for i, c := range applyF.Calls {
+		if c.Name == "yay" && len(c.Args) > 0 && c.Args[0] == "-Rns" {
+			removeIdx = i
+		}
+		if c.Name == "yay" && len(c.Args) > 0 && c.Args[0] == "-S" {
+			installIdx = i
+		}
 	}
-	// First call must be the removal.
-	if applyF.Calls[0].Args[0] != "-Rns" {
-		t.Errorf("expected first call to be removal (-Rns), got args: %v", applyF.Calls[0].Args)
+	if removeIdx < 0 {
+		t.Fatal("expected a removal call (-Rns)")
 	}
-	if applyF.Calls[0].Args[len(applyF.Calls[0].Args)-1] != "quickshell" {
-		t.Errorf("expected first call to remove quickshell, got args: %v", applyF.Calls[0].Args)
+	if installIdx < 0 {
+		t.Fatal("expected an install call (-S)")
 	}
-	// Second call must be the install.
-	if applyF.Calls[1].Args[0] != "-S" {
-		t.Errorf("expected second call to be install (-S), got args: %v", applyF.Calls[1].Args)
+	if removeIdx >= installIdx {
+		t.Fatalf("removal (call %d) must come before install (call %d)", removeIdx, installIdx)
 	}
-	if applyF.Calls[1].Args[len(applyF.Calls[1].Args)-1] != "quickshell-git" {
-		t.Errorf("expected second call to install quickshell-git, got args: %v", applyF.Calls[1].Args)
+	if applyF.Calls[removeIdx].Args[len(applyF.Calls[removeIdx].Args)-1] != "quickshell" {
+		t.Errorf("expected removal of quickshell, got args: %v", applyF.Calls[removeIdx].Args)
+	}
+	if applyF.Calls[installIdx].Args[len(applyF.Calls[installIdx].Args)-1] != "quickshell-git" {
+		t.Errorf("expected install of quickshell-git, got args: %v", applyF.Calls[installIdx].Args)
 	}
 }
 
@@ -369,5 +397,142 @@ func TestUpgrade_AsCurrentUserWhenUnprivileged(t *testing.T) {
 	}
 	if f.Calls[0].User != "" {
 		t.Errorf("expected empty User, got %q", f.Calls[0].User)
+	}
+}
+
+func TestApply_RemovesUnmanagedConflictingPackage(t *testing.T) {
+	// "quickshell" is installed but NOT managed by bigkis (not in state).
+	// "quickshell-git" is in the config. The conflict check should detect
+	// that quickshell conflicts with quickshell-git and remove it before
+	// installing.
+	stubLookPath(t, map[string]bool{"pacman": true, "yay": true})
+	stubProcessUser(t, 1000, map[string]string{})
+
+	planF := runner.NewFake()
+	planF.Respond = func(name string, args []string) (string, string, int, error) {
+		// No foreign packages installed (quickshell is native, not foreign).
+		return "", "", 1, runner.NewExitError(1, "exit status 1")
+	}
+	a := New()
+	a.SetRunner(planF.Runner)
+
+	cfg := &config.Config{
+		Settings: config.Settings{AURHelper: "yay"},
+		AUR:      config.AUR{Packages: []string{"quickshell-git"}},
+	}
+	report, err := a.Plan(cfg, &state.State{})
+	if err != nil {
+		t.Fatalf("Plan: %v", err)
+	}
+
+	applyF := runner.NewFake()
+	applyF.Respond = func(name string, args []string) (string, string, int, error) {
+		if name == "yay" && len(args) > 0 && args[0] == "-Si" {
+			// quickshell-git conflicts with quickshell.
+			return "Conflicts With : quickshell\n", "", 0, nil
+		}
+		if name == "pacman" && len(args) > 0 && args[0] == "-Q" {
+			// quickshell is installed.
+			return "quickshell 1.0-1\n", "", 0, nil
+		}
+		return "", "", 0, nil
+	}
+	if err := a.Apply(cfg, &state.State{}, report, applyF.Runner, silentUI()); err != nil {
+		t.Fatalf("Apply: %v", err)
+	}
+
+	// Should have: 1) yay -Si quickshell-git, 2) pacman -Q quickshell,
+	// 3) yay -Rns quickshell (conflict removal), 4) yay -S quickshell-git.
+	var conflictRemoveIdx, installIdx int = -1, -1
+	for i, c := range applyF.Calls {
+		if c.Name == "yay" && len(c.Args) > 0 && c.Args[0] == "-Rns" {
+			conflictRemoveIdx = i
+		}
+		if c.Name == "yay" && len(c.Args) > 0 && c.Args[0] == "-S" {
+			installIdx = i
+		}
+	}
+	if conflictRemoveIdx < 0 {
+		t.Fatal("expected a conflict removal call (-Rns)")
+	}
+	if installIdx < 0 {
+		t.Fatal("expected an install call (-S)")
+	}
+	if conflictRemoveIdx >= installIdx {
+		t.Fatalf("conflict removal (call %d) must come before install (call %d)", conflictRemoveIdx, installIdx)
+	}
+	lastArg := applyF.Calls[conflictRemoveIdx].Args[len(applyF.Calls[conflictRemoveIdx].Args)-1]
+	if lastArg != "quickshell" {
+		t.Errorf("expected conflict removal of quickshell, got last arg %q", lastArg)
+	}
+}
+
+func TestParseConflictsFromInfo(t *testing.T) {
+	tests := []struct {
+		name string
+		info string
+		want []string
+	}{
+		{
+			name: "no conflicts",
+			info: "Name            : foo\nConflicts With  : None\n",
+			want: nil,
+		},
+		{
+			name: "single conflict",
+			info: "Name            : quickshell-git\nConflicts With  : quickshell\n",
+			want: []string{"quickshell"},
+		},
+		{
+			name: "multiple conflicts",
+			info: "Conflicts With  : quickshell  foo-bar  baz\n",
+			want: []string{"quickshell", "foo-bar", "baz"},
+		},
+		{
+			name: "version constraint stripped",
+			info: "Conflicts With  : quickshell>=1.0  foo<=2.0\n",
+			want: []string{"quickshell", "foo"},
+		},
+		{
+			name: "no conflicts field",
+			info: "Name            : foo\nVersion         : 1.0\n",
+			want: nil,
+		},
+		{
+			name: "empty conflicts value",
+			info: "Conflicts With  : \n",
+			want: nil,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := parseConflictsFromInfo(tt.info)
+			if !reflect.DeepEqual(got, tt.want) {
+				t.Errorf("got %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestStripVersionConstraint(t *testing.T) {
+	tests := []struct {
+		input string
+		want  string
+	}{
+		{"foo", "foo"},
+		{"foo>=1.0", "foo"},
+		{"foo<=2.0", "foo"},
+		{"foo=3.0", "foo"},
+		{"foo>1.0", "foo"},
+		{"foo<2.0", "foo"},
+		{"foo-bar>=1.0", "foo-bar"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.input, func(t *testing.T) {
+			got := stripVersionConstraint(tt.input)
+			if got != tt.want {
+				t.Errorf("got %q, want %q", got, tt.want)
+			}
+		})
 	}
 }

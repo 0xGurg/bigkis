@@ -235,6 +235,16 @@ func (a *AUR) Apply(cfg *config.Config, st *state.State, report plugin.Report, r
 	}
 
 	if len(d.Add) > 0 {
+		// Remove installed packages that conflict with what we're about to
+		// install. This handles the case where an unmanaged package (not in
+		// bigkis config) conflicts with a package we want to add — e.g.
+		// "quickshell" is installed but "quickshell-git" is in the config.
+		// Without this, pacman's "unresolvable package conflicts" error
+		// blocks the install even with --noconfirm.
+		if err := removeConflictingInstalled(d.Add, r, a.helper, helperUser, u); err != nil {
+			return fmt.Errorf("remove conflicting: %w", err)
+		}
+
 		u.Step("aur: installing %d package(s) via %s", len(d.Add), a.helper)
 		args := append([]string{"-S", "--needed", "--noconfirm"}, d.Add...)
 		if _, err := r.Run(runner.Spec{Name: a.helper, Args: args, User: helperUser}); err != nil {
@@ -275,6 +285,109 @@ func opKey(kind plugin.OpKind, target string) string {
 		prefix = "-"
 	}
 	return prefix + target
+}
+
+// removeConflictingInstalled detects and removes installed packages that
+// conflict with any of the packages we want to install. This handles the case
+// where an unmanaged package (not in bigkis config, not in d.Remove) conflicts
+// with a package in d.Add — e.g. "quickshell" is installed but
+// "quickshell-git" is in the config.
+//
+// It queries each target package's "Conflicts With" field via the AUR helper's
+// -Si command, then checks if any of those conflicting packages are installed.
+// Installed conflicts are removed via the helper's -Rns command.
+func removeConflictingInstalled(pkgs []string, r *runner.Runner, helper, helperUser string, u *ui.UI) error {
+	var toRemove []string
+	seen := map[string]bool{}
+
+	for _, pkg := range pkgs {
+		conflicts, err := queryConflicts(pkg, r, helper, helperUser)
+		if err != nil {
+			// If we can't query conflicts, skip — the install step will
+			// surface the conflict error if there is one.
+			continue
+		}
+		for _, c := range conflicts {
+			if seen[c] {
+				continue
+			}
+			seen[c] = true
+			// Check if the conflicting package is installed.
+			if _, err := r.Capture("pacman", "-Q", c); err == nil {
+				toRemove = append(toRemove, c)
+			}
+		}
+	}
+
+	if len(toRemove) == 0 {
+		return nil
+	}
+
+	u.Step("aur: removing %d conflicting package(s) via %s: %s", len(toRemove), helper, strings.Join(toRemove, " "))
+	args := append([]string{"-Rns", "--noconfirm"}, toRemove...)
+	if _, err := r.Run(runner.Spec{Name: helper, Args: args, User: helperUser}); err != nil {
+		return fmt.Errorf("%s -Rns conflicts: %w", helper, err)
+	}
+	return nil
+}
+
+// queryConflicts queries the "Conflicts With" field for a package using the
+// AUR helper's -Si command. Returns the list of conflicting package names
+// (with version constraints stripped). Returns an empty list if the query
+// fails — the caller should proceed and let the install step surface any
+// real conflict.
+func queryConflicts(pkg string, r *runner.Runner, helper, helperUser string) ([]string, error) {
+	out, err := r.Capture(helper, "-Si", pkg)
+	if err != nil {
+		return nil, err
+	}
+	return parseConflictsFromInfo(out), nil
+}
+
+// parseConflictsFromInfo extracts the "Conflicts With" values from pacman -Si
+// or helper -Si output. The field format is:
+//
+//	Conflicts With  :  quickshell  foo-bar>=1.0
+//
+// Version constraints (>=, <=, =, >, <) are stripped from each entry.
+func parseConflictsFromInfo(info string) []string {
+	for _, line := range strings.Split(info, "\n") {
+		// Field name may have varying whitespace before the colon.
+		trimmed := strings.TrimSpace(line)
+		if !strings.HasPrefix(trimmed, "Conflicts With") {
+			continue
+		}
+		// Split on first colon to get the value portion.
+		parts := strings.SplitN(trimmed, ":", 2)
+		if len(parts) < 2 {
+			continue
+		}
+		val := strings.TrimSpace(parts[1])
+		if val == "" || val == "None" {
+			return nil
+		}
+		var result []string
+		for _, entry := range strings.Fields(val) {
+			// Strip version constraints: "foo>=1.0" → "foo"
+			name := stripVersionConstraint(entry)
+			if name != "" {
+				result = append(result, name)
+			}
+		}
+		return result
+	}
+	return nil
+}
+
+// stripVersionConstraint removes version constraints from a package name.
+// "quickshell>=1.0" → "quickshell", "foo-bar" → "foo-bar".
+func stripVersionConstraint(s string) string {
+	for _, sep := range []string{">=", "<=", "=", ">", "<"} {
+		if idx := strings.Index(s, sep); idx >= 0 {
+			return s[:idx]
+		}
+	}
+	return s
 }
 
 func (a *AUR) PersistState(cfg *config.Config, st *state.State) error {
