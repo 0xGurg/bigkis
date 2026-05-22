@@ -235,20 +235,29 @@ func (a *AUR) Apply(cfg *config.Config, st *state.State, report plugin.Report, r
 	}
 
 	if len(d.Add) > 0 {
-		// Remove installed packages that conflict with what we're about to
-		// install. This handles the case where an unmanaged package (not in
-		// bigkis config) conflicts with a package we want to add — e.g.
-		// "quickshell" is installed but "quickshell-git" is in the config.
-		// Without this, pacman's "unresolvable package conflicts" error
-		// blocks the install even with --noconfirm.
-		if err := removeConflictingInstalled(d.Add, r, a.helper, helperUser, u); err != nil {
-			return fmt.Errorf("remove conflicting: %w", err)
-		}
-
 		u.Step("aur: installing %d package(s) via %s", len(d.Add), a.helper)
 		args := append([]string{"-S", "--needed", "--noconfirm"}, d.Add...)
-		if _, err := r.Run(runner.Spec{Name: a.helper, Args: args, User: helperUser}); err != nil {
-			return fmt.Errorf("%s -S: %w", a.helper, err)
+		res, err := r.Run(runner.Spec{Name: a.helper, Args: args, User: helperUser, CaptureOutput: true})
+		if err != nil {
+			// --noconfirm answers the conflict prompt with the default (N),
+			// so "X and Y are in conflict. Remove Y? [y/N]" is answered "no"
+			// and the install fails. Detect this, remove the conflicting
+			// package with pacman, and retry.
+			conflicts := parseConflictError(res.Stderr, d.Add)
+			if len(conflicts) == 0 {
+				return fmt.Errorf("%s -S: %w", a.helper, err)
+			}
+			u.Step("aur: removing conflicting package(s): %s", strings.Join(conflicts, " "))
+			rmArgs := append([]string{"-Rns", "--noconfirm"}, conflicts...)
+			if _, rmErr := r.Run(runner.Spec{Name: "pacman", Args: rmArgs, Sudo: true}); rmErr != nil {
+				return fmt.Errorf("%s -S: %w (also failed to remove conflicting packages: %v)", a.helper, err, rmErr)
+			}
+			u.Step("aur: retrying install of %d package(s)", len(d.Add))
+			retryArgs := append([]string{"-S", "--needed", "--noconfirm"}, d.Add...)
+			if _, err := r.Run(runner.Spec{Name: a.helper, Args: retryArgs, User: helperUser}); err != nil {
+				return fmt.Errorf("%s -S (retry): %w", a.helper, err)
+			}
+			return nil
 		}
 	}
 	return nil
@@ -287,111 +296,54 @@ func opKey(kind plugin.OpKind, target string) string {
 	return prefix + target
 }
 
-// removeConflictingInstalled detects and removes installed packages that
-// conflict with any of the packages we want to install. This handles the case
-// where an unmanaged package (not in bigkis config, not in d.Remove) conflicts
-// with a package in d.Add — e.g. "quickshell" is installed but
-// "quickshell-git" is in the config.
+// parseConflictError extracts conflicting package names from pacman's error
+// output. When pacman fails with "unresolvable package conflicts", the stderr
+// contains lines like:
 //
-// It queries each target package's "Conflicts With" field via the AUR helper's
-// -Si command, then checks if any of those conflicting packages are installed.
-// Installed conflicts are removed via the helper's -Rns command.
-func removeConflictingInstalled(pkgs []string, r *runner.Runner, helper, helperUser string, u *ui.UI) error {
+//	quickshell-git and quickshell are in conflict
+//
+// We return the package names that are NOT in the adding set (i.e. the
+// already-installed packages that need to be removed).
+func parseConflictError(stderr string, adding []string) []string {
+	addingSet := map[string]bool{}
+	for _, p := range adding {
+		addingSet[p] = true
+	}
+
 	var toRemove []string
 	seen := map[string]bool{}
-
-	for _, pkg := range pkgs {
-		conflicts, err := queryConflicts(pkg, r, helper, helperUser)
-		if err != nil {
-			// If we can't query conflicts, skip — the install step will
-			// surface the conflict error if there is one.
+	for _, line := range strings.Split(stderr, "\n") {
+		if !strings.Contains(line, "are in conflict") {
 			continue
 		}
-		for _, c := range conflicts {
-			if seen[c] {
+		andIdx := strings.Index(line, " and ")
+		if andIdx < 0 {
+			continue
+		}
+		pkg1 := trimPacmanErrorPrefix(strings.TrimSpace(line[:andIdx]))
+		rest := line[andIdx+5:] // after " and "
+		endIdx := strings.Index(rest, " are in conflict")
+		if endIdx < 0 {
+			continue
+		}
+		pkg2 := strings.TrimSpace(rest[:endIdx])
+		for _, pkg := range []string{pkg1, pkg2} {
+			if pkg == "" || seen[pkg] || addingSet[pkg] {
 				continue
 			}
-			seen[c] = true
-			// Check if the conflicting package is installed.
-			if _, err := r.Capture("pacman", "-Q", c); err == nil {
-				toRemove = append(toRemove, c)
-			}
+			seen[pkg] = true
+			toRemove = append(toRemove, pkg)
 		}
 	}
-
-	if len(toRemove) == 0 {
-		return nil
-	}
-
-	u.Step("aur: removing %d conflicting package(s) via %s: %s", len(toRemove), helper, strings.Join(toRemove, " "))
-	args := append([]string{"-Rns", "--noconfirm"}, toRemove...)
-	if _, err := r.Run(runner.Spec{Name: helper, Args: args, User: helperUser}); err != nil {
-		return fmt.Errorf("%s -Rns conflicts: %w", helper, err)
-	}
-	return nil
+	return toRemove
 }
 
-// queryConflicts queries the "Conflicts With" field for a package using the
-// AUR helper's -Si command. Returns the list of conflicting package names
-// (with version constraints stripped). Returns an empty list if the query
-// fails — the caller should proceed and let the install step surface any
-// real conflict.
-func queryConflicts(pkg string, r *runner.Runner, helper, helperUser string) ([]string, error) {
-	// Use Run with CaptureOutput instead of Capture, because Capture doesn't
-	// support the User parameter — and AUR helpers refuse to run as root.
-	res, err := r.Run(runner.Spec{
-		Name:          helper,
-		Args:          []string{"-Si", pkg},
-		User:          helperUser,
-		CaptureOutput: true,
-	})
-	if err != nil {
-		return nil, err
-	}
-	return parseConflictsFromInfo(res.Stdout), nil
-}
-
-// parseConflictsFromInfo extracts the "Conflicts With" values from pacman -Si
-// or helper -Si output. The field format is:
-//
-//	Conflicts With  :  quickshell  foo-bar>=1.0
-//
-// Version constraints (>=, <=, =, >, <) are stripped from each entry.
-func parseConflictsFromInfo(info string) []string {
-	for _, line := range strings.Split(info, "\n") {
-		// Field name may have varying whitespace before the colon.
-		trimmed := strings.TrimSpace(line)
-		if !strings.HasPrefix(trimmed, "Conflicts With") {
-			continue
-		}
-		// Split on first colon to get the value portion.
-		parts := strings.SplitN(trimmed, ":", 2)
-		if len(parts) < 2 {
-			continue
-		}
-		val := strings.TrimSpace(parts[1])
-		if val == "" || val == "None" {
-			return nil
-		}
-		var result []string
-		for _, entry := range strings.Fields(val) {
-			// Strip version constraints: "foo>=1.0" → "foo"
-			name := stripVersionConstraint(entry)
-			if name != "" {
-				result = append(result, name)
-			}
-		}
-		return result
-	}
-	return nil
-}
-
-// stripVersionConstraint removes version constraints from a package name.
-// "quickshell>=1.0" → "quickshell", "foo-bar" → "foo-bar".
-func stripVersionConstraint(s string) string {
-	for _, sep := range []string{">=", "<=", "=", ">", "<"} {
-		if idx := strings.Index(s, sep); idx >= 0 {
-			return s[:idx]
+// trimPacmanErrorPrefix strips leading ":: " or "error: " prefixes that
+// pacman puts before package names in conflict messages.
+func trimPacmanErrorPrefix(s string) string {
+	for _, prefix := range []string{":: ", "error: "} {
+		if strings.HasPrefix(s, prefix) {
+			return strings.TrimSpace(s[len(prefix):])
 		}
 	}
 	return s
