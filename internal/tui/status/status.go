@@ -301,9 +301,7 @@ func (m *statusDashboardModel) updateViewport(idx int) {
 			removes = append(removes, op)
 		}
 	}
-	for _, op := range ps.Upgrades.Operations {
-		upgrades = append(upgrades, op)
-	}
+	upgrades = append(upgrades, ps.Upgrades.Operations...)
 
 	if len(adds) > 0 {
 		b.WriteString(tui.Theme.Add.Render("+ adds"))
