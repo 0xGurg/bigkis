@@ -546,9 +546,7 @@ func (m *applyReviewModel) updateViewport(idx int) {
 			removes = append(removes, op)
 		}
 	}
-	for _, op := range p.Upgrades.Operations {
-		upgrades = append(upgrades, op)
-	}
+	upgrades = append(upgrades, p.Upgrades.Operations...)
 
 	if len(adds) > 0 {
 		b.WriteString(tui.Theme.Add.Render("+ adds"))
