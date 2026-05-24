@@ -14,7 +14,8 @@ import (
 )
 
 type Pacman struct {
-	cachedDiff *plan.Diff
+	cachedDiff                *plan.Diff
+	cachedDependencyInstalled []string // declared packages already installed as deps
 	// runner is consulted by Plan for probes; if nil, Plan creates a fresh
 	// runner.New(false). Tests use SetRunner to inject a Fake.
 	runner *runner.Runner
@@ -26,6 +27,10 @@ func New() *Pacman { return &Pacman{} }
 func (p *Pacman) SetRunner(r *runner.Runner) { p.runner = r }
 
 func (p *Pacman) Name() string { return config.PluginPacman }
+
+func (p *Pacman) DependencyInstalled() []string {
+	return append([]string(nil), p.cachedDependencyInstalled...)
+}
 
 func (p *Pacman) Available(cfg *config.Config) error {
 	if !runner.HasCommand("pacman") {
@@ -57,10 +62,17 @@ func (p *Pacman) Plan(cfg *config.Config, st *state.State) (plugin.Report, error
 		return plugin.Report{}, err
 	}
 	d := plan.Compute(cfg.Pacman.Packages, actual, last, cfg.Pacman.Ignored)
+	installed, err := probeInstalled(r)
+	if err != nil {
+		return plugin.Report{}, fmt.Errorf("probe installed pacman packages: %w", err)
+	}
+	install, dependencyInstalled := splitInstallAndDependencyInstalled(d.Add, installed)
+	d.Add = install
 	p.cachedDiff = &d
+	p.cachedDependencyInstalled = dependencyInstalled
 
 	rep := plugin.Report{Plugin: p.Name()}
-	for _, name := range d.Add {
+	for _, name := range install {
 		rep.Operations = append(rep.Operations, plugin.Operation{Kind: plugin.OpAdd, Target: name})
 	}
 	for _, name := range d.Remove {
@@ -214,6 +226,33 @@ func opKey(kind plugin.OpKind, target string) string {
 		prefix = "-"
 	}
 	return prefix + target
+}
+
+// probeInstalled returns every native package on the system, including those
+// installed only to satisfy dependencies.
+func probeInstalled(r *runner.Runner) (map[string]struct{}, error) {
+	out, err := r.Capture("pacman", "-Qq")
+	if err != nil {
+		return nil, err
+	}
+	set := make(map[string]struct{}, len(out))
+	for _, name := range splitLines(out) {
+		set[name] = struct{}{}
+	}
+	return set, nil
+}
+
+// splitInstallAndDependencyInstalled separates declared additions into packages
+// that need a fresh install and packages that are already present as deps.
+func splitInstallAndDependencyInstalled(adds []string, installed map[string]struct{}) (install, dependencyInstalled []string) {
+	for _, name := range adds {
+		if _, ok := installed[name]; ok {
+			dependencyInstalled = append(dependencyInstalled, name)
+		} else {
+			install = append(install, name)
+		}
+	}
+	return install, dependencyInstalled
 }
 
 func (p *Pacman) PersistState(cfg *config.Config, st *state.State) error {

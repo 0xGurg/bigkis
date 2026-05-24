@@ -619,9 +619,10 @@ func runApply(c *cli.Context) error {
 		var plans []applyreview.PluginPlan
 		for _, s := range plan.stages {
 			pp := applyreview.PluginPlan{
-				Name:   s.Plugin.Name(),
-				InSync: false,
-				Report: s.Report,
+				Name:                s.Plugin.Name(),
+				InSync:              false,
+				Report:              s.Report,
+				DependencyInstalled: dependencyInstalledFor(s.Plugin),
 			}
 			// Attach upgrade report for this plugin
 			for _, ur := range upgradeReports {
@@ -634,9 +635,10 @@ func runApply(c *cli.Context) error {
 		}
 		for _, p := range plan.insync {
 			pp := applyreview.PluginPlan{
-				Name:   p.Name(),
-				InSync: true,
-				Report: plugin.Report{},
+				Name:                p.Name(),
+				InSync:              true,
+				Report:              plugin.Report{},
+				DependencyInstalled: dependencyInstalledFor(p),
 			}
 			for _, ur := range upgradeReports {
 				if ur.Plugin == p.Name() {
@@ -771,6 +773,18 @@ func runApply(c *cli.Context) error {
 type stage struct {
 	Plugin plugin.Plugin
 	Report plugin.Report
+}
+
+type dependencyInstalledPlugin interface {
+	DependencyInstalled() []string
+}
+
+func dependencyInstalledFor(p plugin.Plugin) []string {
+	withDeps, ok := p.(dependencyInstalledPlugin)
+	if !ok {
+		return nil
+	}
+	return withDeps.DependencyInstalled()
 }
 
 // planResult is the structured outcome of planning every selected plugin.
