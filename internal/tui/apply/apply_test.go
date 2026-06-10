@@ -491,6 +491,53 @@ func TestApplyReview_NonSelectiveUsesViewport(t *testing.T) {
 	}
 }
 
+func TestApplyReview_ShowsDependencyInstalledPackages(t *testing.T) {
+	plans := []PluginPlan{
+		{
+			Name:                "pacman",
+			InSync:              true,
+			Report:              plugin.Report{},
+			DependencyInstalled: []string{"qt6-svg"},
+		},
+	}
+	m := NewApplyReview("/etc/bigkis/system.toml", plans, false, false, false).applyReviewModel
+	m.width = 100
+	m.height = 30
+
+	v := m.View()
+	if !strings.Contains(v, "already installed as dependency") {
+		t.Errorf("View() should explain dependency-installed packages; got:\n%s", v)
+	}
+	if !strings.Contains(v, "qt6-svg") {
+		t.Errorf("View() should show dependency-installed package name; got:\n%s", v)
+	}
+}
+
+func TestApplyReview_SelectiveShowsDependencyInstalledPackagesAsInfo(t *testing.T) {
+	plans := []PluginPlan{
+		{
+			Name:                "pacman",
+			InSync:              true,
+			Report:              plugin.Report{},
+			DependencyInstalled: []string{"qt6-svg"},
+		},
+	}
+	m := NewApplyReview("/etc/bigkis/system.toml", plans, false, false, true).applyReviewModel
+	m.width = 100
+	m.height = 30
+
+	v := m.View()
+	if !strings.Contains(v, "already installed as dependency") {
+		t.Errorf("View() should explain dependency-installed packages; got:\n%s", v)
+	}
+	if !strings.Contains(v, "qt6-svg") {
+		t.Errorf("View() should show dependency-installed package name; got:\n%s", v)
+	}
+	if strings.Contains(v, "[x]") {
+		t.Errorf("dependency-installed packages should not be selectable actions; got:\n%s", v)
+	}
+}
+
 func TestApplyReview_FilteredPlansSubset(t *testing.T) {
 	m := newTestReviewSelective()
 	m.width = 100

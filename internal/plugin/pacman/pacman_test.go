@@ -99,8 +99,13 @@ func TestPlan_AddAndRemoveAfterPriorState(t *testing.T) {
 	stubLookPath(t)
 	f := runner.NewFake()
 	f.Respond = func(name string, args []string) (string, string, int, error) {
-		if name == "pacman" && len(args) == 1 && args[0] == "-Qqen" {
-			return "neovim\n", "", 0, nil
+		if name == "pacman" && len(args) == 1 {
+			switch args[0] {
+			case "-Qqen":
+				return "neovim\n", "", 0, nil
+			case "-Qq":
+				return "neovim\n", "", 0, nil
+			}
 		}
 		return "", "", 0, nil
 	}
@@ -141,8 +146,11 @@ func TestApply_AddIssuesPacmanS(t *testing.T) {
 	stubLookPath(t)
 	f := runner.NewFake()
 	f.Respond = func(name string, args []string) (string, string, int, error) {
-		if name == "pacman" && len(args) == 1 && args[0] == "-Qqen" {
-			return "", "", 0, nil
+		if name == "pacman" && len(args) == 1 {
+			switch args[0] {
+			case "-Qqen", "-Qq":
+				return "", "", 0, nil
+			}
 		}
 		return "", "", 0, nil
 	}
@@ -275,9 +283,11 @@ func TestApply_AcceptsSubsetReport(t *testing.T) {
 	stubLookPath(t)
 	planF := runner.NewFake()
 	planF.Respond = func(name string, args []string) (string, string, int, error) {
-		if name == "pacman" && len(args) == 1 && args[0] == "-Qqen" {
-			// Nothing installed, so all declared packages become adds.
-			return "", "", 0, nil
+		if name == "pacman" && len(args) == 1 {
+			switch args[0] {
+			case "-Qqen", "-Qq":
+				return "", "", 0, nil
+			}
 		}
 		return "", "", 0, nil
 	}
@@ -309,8 +319,13 @@ func TestApply_DemotesBeforeInstalling(t *testing.T) {
 	stubLookPath(t)
 	planF := runner.NewFake()
 	planF.Respond = func(name string, args []string) (string, string, int, error) {
-		if name == "pacman" && len(args) == 1 && args[0] == "-Qqen" {
-			return "nvidia\n", "", 0, nil
+		if name == "pacman" && len(args) == 1 {
+			switch args[0] {
+			case "-Qqen":
+				return "nvidia\n", "", 0, nil
+			case "-Qq":
+				return "nvidia\n", "", 0, nil
+			}
 		}
 		return "", "", 0, nil
 	}
@@ -387,5 +402,73 @@ func TestUpgrade_RunsSyu(t *testing.T) {
 	want := []string{"-Syu", "--noconfirm"}
 	if !reflect.DeepEqual(c.Args, want) {
 		t.Errorf("argv = %v, want %v", c.Args, want)
+	}
+}
+
+func TestPlan_TracksDependencyOnlyPackagesWithoutOperation(t *testing.T) {
+	stubLookPath(t)
+	f := runner.NewFake()
+	f.Respond = func(name string, args []string) (string, string, int, error) {
+		if name == "pacman" && len(args) == 1 {
+			switch args[0] {
+			case "-Qqen":
+				return "", "", 0, nil
+			case "-Qq":
+				return "qt6-svg\n", "", 0, nil
+			}
+		}
+		return "", "", 0, nil
+	}
+
+	p := New()
+	p.SetRunner(f.Runner)
+	cfg := &config.Config{Pacman: config.Pacman{Packages: []string{"qt6-svg"}}}
+	report, err := p.Plan(cfg, &state.State{})
+	if err != nil {
+		t.Fatalf("Plan: %v", err)
+	}
+	if len(report.Operations) != 0 {
+		t.Fatalf("expected no executable ops, got %+v", report.Operations)
+	}
+	if len(p.cachedDiff.Add) != 0 {
+		t.Fatalf("expected no install adds, got %v", p.cachedDiff.Add)
+	}
+	if !reflect.DeepEqual(p.DependencyInstalled(), []string{"qt6-svg"}) {
+		t.Fatalf("DependencyInstalled = %v", p.DependencyInstalled())
+	}
+}
+
+func TestApply_DoesNotPromoteDependencyOnlyPackages(t *testing.T) {
+	stubLookPath(t)
+	planF := runner.NewFake()
+	planF.Respond = func(name string, args []string) (string, string, int, error) {
+		if name == "pacman" && len(args) == 1 {
+			switch args[0] {
+			case "-Qqen":
+				return "", "", 0, nil
+			case "-Qq":
+				return "qt6-svg\n", "", 0, nil
+			}
+		}
+		return "", "", 0, nil
+	}
+
+	p := New()
+	p.SetRunner(planF.Runner)
+	cfg := &config.Config{
+		Pacman:   config.Pacman{Packages: []string{"qt6-svg"}},
+		Settings: config.Settings{PruneOrphans: config.PruneOrphansNone},
+	}
+	report, err := p.Plan(cfg, &state.State{})
+	if err != nil {
+		t.Fatalf("Plan: %v", err)
+	}
+
+	applyF := runner.NewFake()
+	if err := p.Apply(cfg, &state.State{}, report, applyF.Runner, silentUI()); err != nil {
+		t.Fatalf("Apply: %v", err)
+	}
+	if len(applyF.Calls) != 0 {
+		t.Fatalf("expected no pacman calls, got %+v", applyF.Calls)
 	}
 }

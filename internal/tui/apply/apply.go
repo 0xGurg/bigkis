@@ -31,10 +31,11 @@ import (
 
 // PluginPlan holds the plan result for one plugin in the apply review.
 type PluginPlan struct {
-	Name     string
-	InSync   bool                 // true when the plugin has no changes
-	Report   plugin.Report        // drift operations (add/remove)
-	Upgrades plugin.UpgradeReport // pending upgrades (OpUpdate only)
+	Name                string
+	InSync              bool                 // true when the plugin has no changes
+	Report              plugin.Report        // drift operations (add/remove)
+	Upgrades            plugin.UpgradeReport // pending upgrades (OpUpdate only)
+	DependencyInstalled []string             // declared pacman packages already installed as deps
 }
 
 // checkedOp is a single operation with a checkbox state (Phase 5 selective).
@@ -110,12 +111,15 @@ type pluginPlanItem struct {
 
 func (p pluginPlanItem) FilterValue() string { return p.plan.Name }
 func (p pluginPlanItem) Title() string {
-	if p.plan.InSync && !p.plan.Upgrades.HasUpgrades() {
+	if p.plan.InSync && !p.plan.Upgrades.HasUpgrades() && len(p.plan.DependencyInstalled) == 0 {
 		return fmt.Sprintf("%-12s %s", p.plan.Name, tui.Theme.Add.Render("in sync"))
 	}
 	var parts []string
 	if !p.plan.InSync {
 		parts = append(parts, fmt.Sprintf("%d changes", len(p.plan.Report.Operations)))
+	}
+	if len(p.plan.DependencyInstalled) > 0 {
+		parts = append(parts, fmt.Sprintf("%d already deps", len(p.plan.DependencyInstalled)))
 	}
 	if p.plan.Upgrades.HasUpgrades() {
 		parts = append(parts, fmt.Sprintf("%d upgrades", len(p.plan.Upgrades.Operations)))
@@ -437,7 +441,7 @@ func (m *applyReviewModel) View() string {
 
 	var rightView string
 	if m.selective {
-		rightView = m.opList.View()
+		rightView = m.selectiveRightView()
 	} else {
 		rightView = m.viewport.View()
 	}
@@ -530,7 +534,7 @@ func (m *applyReviewModel) updateViewport(idx int) {
 	b.WriteString(strings.Repeat("─", 40))
 	b.WriteString("\n\n")
 
-	if p.InSync && !p.Upgrades.HasUpgrades() {
+	if p.InSync && !p.Upgrades.HasUpgrades() && len(p.DependencyInstalled) == 0 {
 		b.WriteString(tui.Theme.Add.Render("in sync — no changes"))
 		m.viewport.SetContent(b.String())
 		m.viewport.GotoTop()
@@ -578,6 +582,17 @@ func (m *applyReviewModel) updateViewport(idx int) {
 		b.WriteString("\n")
 	}
 
+	if len(p.DependencyInstalled) > 0 {
+		b.WriteString(tui.Theme.Dim.Render("already installed as dependency"))
+		b.WriteString("\n")
+		for _, name := range p.DependencyInstalled {
+			b.WriteString("  ")
+			b.WriteString(name)
+			b.WriteString("\n")
+		}
+		b.WriteString("\n")
+	}
+
 	if len(upgrades) > 0 {
 		b.WriteString(tui.Theme.Warn.Render("↑ upgrades"))
 		b.WriteString("\n")
@@ -594,6 +609,40 @@ func (m *applyReviewModel) updateViewport(idx int) {
 
 	m.viewport.SetContent(b.String())
 	m.viewport.GotoTop()
+}
+
+func (m *applyReviewModel) selectiveRightView() string {
+	if len(m.plans) == 0 {
+		return m.opList.View()
+	}
+	idx := m.list.Index()
+	if idx < 0 || idx >= len(m.plans) {
+		return m.opList.View()
+	}
+	note := dependencyInstalledView(m.plans[idx])
+	listView := m.opList.View()
+	if note == "" {
+		return listView
+	}
+	if strings.TrimSpace(listView) == "" {
+		return note
+	}
+	return note + "\n\n" + listView
+}
+
+func dependencyInstalledView(p PluginPlan) string {
+	if len(p.DependencyInstalled) == 0 {
+		return ""
+	}
+	var b strings.Builder
+	b.WriteString(tui.Theme.Dim.Render("already installed as dependency"))
+	b.WriteString("\n")
+	for _, name := range p.DependencyInstalled {
+		b.WriteString("  ")
+		b.WriteString(name)
+		b.WriteString("\n")
+	}
+	return b.String()
 }
 
 func (m *applyReviewModel) updateList(msg tea.Msg) tea.Cmd {
