@@ -349,3 +349,45 @@ func TestImportPicker_WindowResize(t *testing.T) {
 		t.Error("expected list to have been resized")
 	}
 }
+
+func TestImportPicker_EmptyTabShowsNoPackages(t *testing.T) {
+	m := newTestPicker([]string{"pacman"}, nil, nil, nil, nil)
+	view := m.View()
+	if !strings.Contains(view, "(no packages)") {
+		t.Errorf("expected '(no packages)' in view for empty tab, got: %s", view)
+	}
+}
+
+func TestImportPicker_BuildSelectionSortOrder(t *testing.T) {
+	// Test string package sorting (pacman)
+	m := newTestPicker([]string{"pacman"}, []string{"zzz", "aaa", "mmm"}, nil, nil, nil)
+	m.Update(keyRune('o')) // Write — triggers buildSelection
+	sel := m.Selection()
+	if len(sel.Pacman) != 3 {
+		t.Fatalf("expected 3 pacman packages, got %d", len(sel.Pacman))
+	}
+	if sel.Pacman[0] != "aaa" || sel.Pacman[1] != "mmm" || sel.Pacman[2] != "zzz" {
+		t.Errorf("expected sorted [aaa mmm zzz], got %v", sel.Pacman)
+	}
+
+	// Test Node sorting (Manager first, then Name)
+	m2 := newTestPicker([]string{"node"}, nil, nil, nil, []NodePackage{
+		{Name: "beta", Manager: "npm"},
+		{Name: "alpha", Manager: "pnpm"},
+		{Name: "gamma", Manager: "npm"},
+	})
+	m2.Update(keyRune('o'))
+	sel2 := m2.Selection()
+	if len(sel2.Node) != 3 {
+		t.Fatalf("expected 3 node packages, got %d", len(sel2.Node))
+	}
+	if sel2.Node[0].Manager != "npm" || sel2.Node[0].Name != "beta" {
+		t.Errorf("expected npm/beta first, got %s/%s", sel2.Node[0].Manager, sel2.Node[0].Name)
+	}
+	if sel2.Node[1].Manager != "npm" || sel2.Node[1].Name != "gamma" {
+		t.Errorf("expected npm/gamma second, got %s/%s", sel2.Node[1].Manager, sel2.Node[1].Name)
+	}
+	if sel2.Node[2].Manager != "pnpm" || sel2.Node[2].Name != "alpha" {
+		t.Errorf("expected pnpm/alpha third, got %s/%s", sel2.Node[2].Manager, sel2.Node[2].Name)
+	}
+}

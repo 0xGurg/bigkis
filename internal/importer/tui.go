@@ -323,9 +323,9 @@ func newImportPickerWithData(
 // ──────────────────────────────────────────────
 
 func (m *importPickerModel) Init() tea.Cmd {
-	return func() tea.Msg {
-		return tea.WindowSizeMsg{Width: 80, Height: 24}
-	}
+	// Bubble Tea sends the real window size before the first Update,
+	// so no synthetic WindowSizeMsg is needed.
+	return nil
 }
 
 func (m *importPickerModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
@@ -411,6 +411,60 @@ func (m *importPickerModel) Err() error { return m.err }
 // ──────────────────────────────────────────────
 // Internal helpers
 // ──────────────────────────────────────────────
+
+// forEachActivePkg calls fn for each package key in the active tab.
+// The key is the string used to index the selected* maps (composite
+// "name\x00manager" for node, plain name for others).
+func (m *importPickerModel) forEachActivePkg(fn func(key string)) {
+	switch m.tabs[m.active] {
+	case "pacman":
+		for _, p := range m.pacmanPkgs {
+			fn(p)
+		}
+	case "aur":
+		for _, p := range m.aurPkgs {
+			fn(p)
+		}
+	case "flatpak":
+		for _, p := range m.flatpakPkgs {
+			fn(p)
+		}
+	case "node":
+		for _, p := range m.nodePkgs {
+			fn(p.Name + "\x00" + p.Manager)
+		}
+	}
+}
+
+// activeSelection returns a pointer to the active tab's selection map.
+func (m *importPickerModel) activeSelection() *map[string]bool {
+	switch m.tabs[m.active] {
+	case "pacman":
+		return &m.selectedPacman
+	case "aur":
+		return &m.selectedAUR
+	case "flatpak":
+		return &m.selectedFlatpak
+	case "node":
+		return &m.selectedNode
+	}
+	return &m.selectedPacman
+}
+
+// totalPackages returns the total number of packages for the given tab name.
+func (m *importPickerModel) totalPackages(tab string) int {
+	switch tab {
+	case "pacman":
+		return len(m.pacmanPkgs)
+	case "aur":
+		return len(m.aurPkgs)
+	case "flatpak":
+		return len(m.flatpakPkgs)
+	case "node":
+		return len(m.nodePkgs)
+	}
+	return 0
+}
 
 func (m *importPickerModel) handleKeyMsg(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	// Quit — always available regardless of mode
@@ -499,38 +553,20 @@ func (m *importPickerModel) toggleSelected() {
 		return
 	}
 
-	switch m.tabs[m.active] {
-	case "pacman":
-		m.selectedPacman[pi.name] = !m.selectedPacman[pi.name]
-	case "aur":
-		m.selectedAUR[pi.name] = !m.selectedAUR[pi.name]
-	case "flatpak":
-		m.selectedFlatpak[pi.name] = !m.selectedFlatpak[pi.name]
-	case "node":
-		m.selectedNode[pi.nodeKey()] = !m.selectedNode[pi.nodeKey()]
+	sel := m.activeSelection()
+	key := pi.nodeKey()
+	if pi.manager == "" {
+		key = pi.name
 	}
+	(*sel)[key] = !(*sel)[key]
 	m.rebuildActiveList()
 }
 
 func (m *importPickerModel) setAllChecked(checked bool) {
-	switch m.tabs[m.active] {
-	case "pacman":
-		for _, p := range m.pacmanPkgs {
-			m.selectedPacman[p] = checked
-		}
-	case "aur":
-		for _, p := range m.aurPkgs {
-			m.selectedAUR[p] = checked
-		}
-	case "flatpak":
-		for _, p := range m.flatpakPkgs {
-			m.selectedFlatpak[p] = checked
-		}
-	case "node":
-		for _, p := range m.nodePkgs {
-			m.selectedNode[p.Name+"\x00"+p.Manager] = checked
-		}
-	}
+	sel := m.activeSelection()
+	m.forEachActivePkg(func(key string) {
+		(*sel)[key] = checked
+	})
 	m.rebuildActiveList()
 }
 
@@ -669,30 +705,27 @@ func (m *importPickerModel) countView() string {
 }
 
 func (m *importPickerModel) tabCounts(tab string) (selected, total int) {
+	total = m.totalPackages(tab)
 	switch tab {
 	case "pacman":
-		total = len(m.pacmanPkgs)
 		for _, p := range m.pacmanPkgs {
 			if m.selectedPacman[p] {
 				selected++
 			}
 		}
 	case "aur":
-		total = len(m.aurPkgs)
 		for _, p := range m.aurPkgs {
 			if m.selectedAUR[p] {
 				selected++
 			}
 		}
 	case "flatpak":
-		total = len(m.flatpakPkgs)
 		for _, p := range m.flatpakPkgs {
 			if m.selectedFlatpak[p] {
 				selected++
 			}
 		}
 	case "node":
-		total = len(m.nodePkgs)
 		for _, p := range m.nodePkgs {
 			if m.selectedNode[p.Name+"\x00"+p.Manager] {
 				selected++
@@ -705,18 +738,7 @@ func (m *importPickerModel) tabCounts(tab string) (selected, total int) {
 // allTabsEmpty returns true when every tab has zero packages.
 func (m *importPickerModel) allTabsEmpty() bool {
 	for _, tab := range m.tabs {
-		var total int
-		switch tab {
-		case "pacman":
-			total = len(m.pacmanPkgs)
-		case "aur":
-			total = len(m.aurPkgs)
-		case "flatpak":
-			total = len(m.flatpakPkgs)
-		case "node":
-			total = len(m.nodePkgs)
-		}
-		if total > 0 {
+		if m.totalPackages(tab) > 0 {
 			return false
 		}
 	}
