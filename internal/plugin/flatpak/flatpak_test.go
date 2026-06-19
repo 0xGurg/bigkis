@@ -348,3 +348,120 @@ func TestPlan_WrapsProbeFailure(t *testing.T) {
 		t.Fatalf("expected probe context, got %v", err)
 	}
 }
+
+func TestPendingUpgrades_SystemOnly(t *testing.T) {
+	prev := runner.LookPath
+	runner.LookPath = func(name string) (string, error) { return "/usr/bin/" + name, nil }
+	t.Cleanup(func() { runner.LookPath = prev })
+
+	f := runner.NewFake()
+	f.Respond = func(name string, args []string) (string, string, int, error) {
+		if name == "flatpak" && len(args) >= 3 && args[1] == "--updates" && args[2] == "--system" {
+			// cols[0]=app, cols[2]=version
+			return "org.gnome.Builder\tstable\t47.2\norg.gimp.GIMP\tstable\t3.0.0\n", "", 0, nil
+		}
+		return "", "", 0, nil
+	}
+	fp := New()
+	cfg := &config.Config{Flatpak: config.Flatpak{UserPackages: nil}}
+	rep, err := fp.PendingUpgrades(cfg, f.Runner)
+	if err != nil {
+		t.Fatalf("PendingUpgrades: %v", err)
+	}
+	if rep.Plugin != "flatpak" {
+		t.Errorf("Plugin = %q", rep.Plugin)
+	}
+	if len(rep.Operations) != 2 {
+		t.Fatalf("got %d ops, want 2", len(rep.Operations))
+	}
+	if rep.Operations[0].Target != "org.gnome.Builder" {
+		t.Errorf("Target = %q", rep.Operations[0].Target)
+	}
+	if !strings.Contains(rep.Operations[0].Detail, "47.2") {
+		t.Error("missing version in detail")
+	}
+	if !strings.Contains(rep.Operations[0].Detail, "(system)") {
+		t.Error("missing (system) scope")
+	}
+	if rep.Operations[1].Target != "org.gimp.GIMP" {
+		t.Errorf("Target = %q", rep.Operations[1].Target)
+	}
+	if !rep.HasUpgrades() {
+		t.Error("HasUpgrades should be true")
+	}
+}
+
+func TestPendingUpgrades_PerUser(t *testing.T) {
+	prev := runner.LookPath
+	runner.LookPath = func(name string) (string, error) { return "/usr/bin/" + name, nil }
+	t.Cleanup(func() { runner.LookPath = prev })
+
+	f := runner.NewFake()
+	f.Respond = func(name string, args []string) (string, string, int, error) {
+		if name == "flatpak" && len(args) >= 3 && args[2] == "--system" {
+			return "", "", 0, nil // no system upgrades
+		}
+		if name == "sudo" && len(args) >= 3 && args[2] == "flatpak" {
+			// cols[0]=app, cols[2]=version
+			return "com.visualstudio.code\tstable\t1.94.0\n", "", 0, nil
+		}
+		return "", "", 0, nil
+	}
+	fp := New()
+	cfg := &config.Config{Flatpak: config.Flatpak{UserPackages: map[string][]string{"alice": {"com.visualstudio.code"}}}}
+	rep, err := fp.PendingUpgrades(cfg, f.Runner)
+	if err != nil {
+		t.Fatalf("PendingUpgrades: %v", err)
+	}
+	if len(rep.Operations) != 1 {
+		t.Fatalf("got %d ops, want 1", len(rep.Operations))
+	}
+	if rep.Operations[0].Target != "com.visualstudio.code" {
+		t.Errorf("Target = %q", rep.Operations[0].Target)
+	}
+	if !strings.Contains(rep.Operations[0].Detail, "(user alice)") {
+		t.Errorf("missing user scope: %q", rep.Operations[0].Detail)
+	}
+}
+
+func TestPendingUpgrades_FlatpakNotInstalled(t *testing.T) {
+	prev := runner.LookPath
+	runner.LookPath = func(name string) (string, error) {
+		if name == "flatpak" {
+			return "", fmt.Errorf("not found")
+		}
+		return "/usr/bin/" + name, nil
+	}
+	t.Cleanup(func() { runner.LookPath = prev })
+
+	fp := New()
+	rep, err := fp.PendingUpgrades(&config.Config{}, runner.NewFake().Runner)
+	if err != nil {
+		t.Fatalf("PendingUpgrades: %v", err)
+	}
+	if len(rep.Operations) != 0 {
+		t.Errorf("expected 0 ops when flatpak missing, got %d", len(rep.Operations))
+	}
+	if rep.Plugin != "flatpak" {
+		t.Errorf("Plugin = %q", rep.Plugin)
+	}
+}
+
+func TestPendingUpgrades_SystemErrorReturnsError(t *testing.T) {
+	prev := runner.LookPath
+	runner.LookPath = func(name string) (string, error) { return "/usr/bin/" + name, nil }
+	t.Cleanup(func() { runner.LookPath = prev })
+
+	f := runner.NewFake()
+	f.Respond = func(name string, args []string) (string, string, int, error) {
+		if name == "flatpak" && len(args) >= 3 && args[2] == "--system" {
+			return "error output", "", 1, runner.NewExitError(1, "remote-ls failed")
+		}
+		return "", "", 0, nil
+	}
+	fp := New()
+	_, err := fp.PendingUpgrades(&config.Config{}, f.Runner)
+	if err == nil {
+		t.Fatal("expected error from failed system remote-ls")
+	}
+}

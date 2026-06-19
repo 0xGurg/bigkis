@@ -337,6 +337,71 @@ func TestStatusDashboard_keyMatchApply(t *testing.T) {
 	}
 }
 
+// ──────────────────────────────────────────────
+// Upgrades
+// ──────────────────────────────────────────────
+
+func TestStatusDashboard_UpgradeCountInPluginList(t *testing.T) {
+	plugins := []PluginStatus{
+		{Name: "pacman", Available: true, Report: plugin.Report{Operations: []plugin.Operation{
+			{Kind: plugin.OpAdd, Target: "vim"},
+		}}, Upgrades: plugin.UpgradeReport{Operations: []plugin.Operation{
+			{Kind: plugin.OpUpdate, Target: "firefox", Detail: "1.0 → 2.0"},
+			{Kind: plugin.OpUpdate, Target: "chrome", Detail: "3.0 → 4.0"},
+		}}},
+		{Name: "aur", Available: true, Report: plugin.Report{}},
+		{Name: "flatpak", Available: false, Error: "flatpak not found"},
+	}
+	d := NewStatusDashboard("/etc/bigkis/system.toml", plugins)
+	m := d.statusDashboardModel
+	m.width = 100
+	m.height = 30
+
+	v := m.View()
+	if !strings.Contains(v, "2 upgrades") {
+		t.Errorf("View() should contain '2 upgrades' in plugin list; got:\n%s", v)
+	}
+}
+
+func TestStatusDashboard_UpgradeEntriesInViewport(t *testing.T) {
+	plugins := []PluginStatus{
+		{Name: "pacman", Available: true, Upgrades: plugin.UpgradeReport{Operations: []plugin.Operation{
+			{Kind: plugin.OpUpdate, Target: "firefox", Detail: "1.0 → 2.0"},
+		}}},
+		{Name: "aur", Available: true, Report: plugin.Report{}},
+	}
+	d := NewStatusDashboard("/etc/bigkis/system.toml", plugins)
+	m := d.statusDashboardModel
+
+	vpContent := m.viewport.View()
+	if !strings.Contains(vpContent, "↑ upgrades") {
+		t.Errorf("viewport should contain '↑ upgrades'; got:\n%s", vpContent)
+	}
+	if !strings.Contains(vpContent, "firefox") {
+		t.Errorf("viewport should contain 'firefox'; got:\n%s", vpContent)
+	}
+}
+
+func TestStatusDashboard_UpgradeCountInStatusBar(t *testing.T) {
+	plugins := []PluginStatus{
+		{Name: "pacman", Available: true, Upgrades: plugin.UpgradeReport{Operations: []plugin.Operation{
+			{Kind: plugin.OpUpdate, Target: "firefox"},
+		}}},
+		{Name: "aur", Available: true, Upgrades: plugin.UpgradeReport{Operations: []plugin.Operation{
+			{Kind: plugin.OpUpdate, Target: "chrome"},
+		}}},
+	}
+	d := NewStatusDashboard("/etc/bigkis/system.toml", plugins)
+	m := d.statusDashboardModel
+	m.width = 100
+	m.height = 30
+
+	v := m.View()
+	if !strings.Contains(v, "2 upgrades available") {
+		t.Errorf("View() should contain '2 upgrades available'; got:\n%s", v)
+	}
+}
+
 func TestPluginStatus_HasChanges(t *testing.T) {
 	// Available + ops -> true
 	ps := PluginStatus{Name: "p", Available: true, Report: plugin.Report{Operations: []plugin.Operation{
