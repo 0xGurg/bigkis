@@ -538,6 +538,93 @@ func TestApplyReview_SelectiveShowsDependencyInstalledPackagesAsInfo(t *testing.
 	}
 }
 
+// ──────────────────────────────────────────────
+// Upgrade display tests
+// ──────────────────────────────────────────────
+
+func TestApplyReview_UpgradeCountInPluginList(t *testing.T) {
+	plans := []PluginPlan{
+		{
+			Name:   "pacman",
+			InSync: true,
+			Report: plugin.Report{},
+			Upgrades: plugin.UpgradeReport{Operations: []plugin.Operation{
+				{Kind: plugin.OpUpdate, Target: "firefox", Detail: "100.0 -> 101.0"},
+			}},
+		},
+	}
+	m := NewApplyReview("/etc/bigkis/system.toml", plans, false, true, false)
+	mm := m.applyReviewModel
+	mm.width = 100
+	mm.height = 30
+
+	v := mm.View()
+	if !strings.Contains(v, "1 upgrades") {
+		t.Errorf("View() should contain '1 upgrades' in list item; got:\n%s", v)
+	}
+}
+
+func TestApplyReview_UpgradeEntriesInViewport(t *testing.T) {
+	plans := []PluginPlan{
+		{
+			Name:   "pacman",
+			InSync: true,
+			Report: plugin.Report{},
+			Upgrades: plugin.UpgradeReport{Operations: []plugin.Operation{
+				{Kind: plugin.OpUpdate, Target: "firefox", Detail: "100.0 -> 101.0"},
+			}},
+		},
+	}
+	m := NewApplyReview("/etc/bigkis/system.toml", plans, false, true, false)
+	mm := m.applyReviewModel
+	mm.width = 100
+	mm.height = 30
+
+	vp := mm.viewport.View()
+	if !strings.Contains(vp, "↑ upgrades") {
+		t.Errorf("viewport should contain '↑ upgrades'; got:\n%s", vp)
+	}
+	if !strings.Contains(vp, "firefox") {
+		t.Errorf("viewport should contain upgrade package name; got:\n%s", vp)
+	}
+}
+
+func TestApplyReview_UpgradesInSelectiveMode(t *testing.T) {
+	plans := []PluginPlan{
+		{
+			Name:   "pacman",
+			InSync: true,
+			Report: plugin.Report{},
+			Upgrades: plugin.UpgradeReport{Operations: []plugin.Operation{
+				{Kind: plugin.OpUpdate, Target: "firefox", Detail: "100.0 -> 101.0"},
+			}},
+		},
+	}
+	m := NewApplyReview("/etc/bigkis/system.toml", plans, false, true, true)
+	mm := m.applyReviewModel
+	mm.width = 100
+	mm.height = 30
+
+	// Check that opItems contains the upgrade with "↑" prefix
+	var foundTitle bool
+	for _, item := range mm.opItems {
+		title := item.Title()
+		if strings.Contains(title, "↑") && strings.Contains(title, "firefox") {
+			foundTitle = true
+			break
+		}
+	}
+	if !foundTitle {
+		t.Error("opItems should contain upgrade with '↑' prefix and 'firefox' in Title()")
+	}
+
+	// Verify the rendered View also shows "↑" for upgrades
+	v := mm.View()
+	if !strings.Contains(v, "↑") {
+		t.Errorf("selective View() should contain '↑' for upgrades; got:\n%s", v)
+	}
+}
+
 func TestApplyReview_FilteredPlansSubset(t *testing.T) {
 	m := newTestReviewSelective()
 	m.width = 100

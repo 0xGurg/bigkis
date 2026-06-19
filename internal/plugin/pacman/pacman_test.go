@@ -472,3 +472,101 @@ func TestApply_DoesNotPromoteDependencyOnlyPackages(t *testing.T) {
 		t.Fatalf("expected no pacman calls, got %+v", applyF.Calls)
 	}
 }
+
+func TestPendingUpgrades_ParsesOutput(t *testing.T) {
+	stubLookPath(t)
+	f := runner.NewFake()
+	f.Respond = func(name string, args []string) (string, string, int, error) {
+		if name == "pacman" && len(args) >= 1 && args[0] == "-Qu" {
+			return "neovim 0.9.5-1 -> 0.10.0-1\ngit 2.44.0-1 -> 2.45.0-1\n", "", 0, nil
+		}
+		return "", "", 0, nil
+	}
+	p := New()
+	rep, err := p.PendingUpgrades(&config.Config{}, f.Runner)
+	if err != nil {
+		t.Fatalf("PendingUpgrades: %v", err)
+	}
+	if rep.Plugin != "pacman" {
+		t.Errorf("Plugin = %q, want pacman", rep.Plugin)
+	}
+	if len(rep.Operations) != 2 {
+		t.Fatalf("got %d ops, want 2", len(rep.Operations))
+	}
+	if rep.Operations[0].Kind != plugin.OpUpdate {
+		t.Error("op should be OpUpdate")
+	}
+	if rep.Operations[0].Target != "neovim" {
+		t.Errorf("Target = %q", rep.Operations[0].Target)
+	}
+	if !strings.Contains(rep.Operations[0].Detail, "0.9.5-1 -> 0.10.0-1") {
+		t.Error("missing version detail")
+	}
+	if rep.Operations[1].Target != "git" {
+		t.Errorf("Target = %q", rep.Operations[1].Target)
+	}
+	if !rep.HasUpgrades() {
+		t.Error("HasUpgrades should be true")
+	}
+}
+
+func TestPendingUpgrades_StaleDbReturnsEmptyReport(t *testing.T) {
+	stubLookPath(t)
+	f := runner.NewFake()
+	f.Respond = func(name string, args []string) (string, string, int, error) {
+		if name == "pacman" && len(args) >= 1 && args[0] == "-Qu" {
+			// Exit 1 with empty stdout = stale DB
+			return "", "", 1, runner.NewExitError(1, "exit status 1")
+		}
+		return "", "", 0, nil
+	}
+	p := New()
+	rep, err := p.PendingUpgrades(&config.Config{}, f.Runner)
+	if err != nil {
+		t.Fatalf("stale DB should not be an error: %v", err)
+	}
+	if len(rep.Operations) != 0 {
+		t.Errorf("expected 0 ops for stale DB, got %d", len(rep.Operations))
+	}
+	if rep.HasUpgrades() {
+		t.Error("HasUpgrades should be false for stale DB")
+	}
+}
+
+func TestPendingUpgrades_NoUpgradesReturnsEmptyReport(t *testing.T) {
+	stubLookPath(t)
+	f := runner.NewFake()
+	f.Respond = func(name string, args []string) (string, string, int, error) {
+		if name == "pacman" && len(args) >= 1 && args[0] == "-Qu" {
+			return "", "", 0, nil
+		}
+		return "", "", 0, nil
+	}
+	p := New()
+	rep, err := p.PendingUpgrades(&config.Config{}, f.Runner)
+	if err != nil {
+		t.Fatalf("PendingUpgrades: %v", err)
+	}
+	if len(rep.Operations) != 0 {
+		t.Errorf("expected 0 ops, got %d", len(rep.Operations))
+	}
+	if rep.HasUpgrades() {
+		t.Error("HasUpgrades should be false")
+	}
+}
+
+func TestPendingUpgrades_CommandFailsReturnsError(t *testing.T) {
+	stubLookPath(t)
+	f := runner.NewFake()
+	f.Respond = func(name string, args []string) (string, string, int, error) {
+		if name == "pacman" && len(args) >= 1 && args[0] == "-Qu" {
+			return "some error output", "", 127, runner.NewExitError(127, "command failed")
+		}
+		return "", "", 0, nil
+	}
+	p := New()
+	_, err := p.PendingUpgrades(&config.Config{}, f.Runner)
+	if err == nil {
+		t.Fatal("expected error for exit 127")
+	}
+}

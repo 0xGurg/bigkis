@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"codeberg.org/gurg/bigkis/internal/config"
+	"codeberg.org/gurg/bigkis/internal/plugin"
 	"codeberg.org/gurg/bigkis/internal/runner"
 	"codeberg.org/gurg/bigkis/internal/state"
 	"codeberg.org/gurg/bigkis/internal/ui"
@@ -418,4 +419,138 @@ func TestUpgrade_SkipsWhenNoPackagesTracked(t *testing.T) {
 
 func silentNodeUI() *ui.UI {
 	return ui.New(io.Discard, &bytes.Buffer{}, false, true)
+}
+
+func TestPendingUpgrades_NPMParsesJSON(t *testing.T) {
+	prev := runner.LookPath
+	runner.LookPath = func(name string) (string, error) { return "/usr/bin/" + name, nil }
+	t.Cleanup(func() { runner.LookPath = prev })
+
+	f := runner.NewFake()
+	f.Respond = func(name string, args []string) (string, string, int, error) {
+		if name == "npm" && len(args) >= 3 && args[0] == "outdated" {
+			jsonOut := `{"eslint":{"current":"8.50.0","wanted":"8.57.0","latest":"9.0.0"},"prettier":{"current":"3.1.0","wanted":"3.3.0","latest":"3.3.0"}}`
+			return jsonOut, "", 0, nil
+		}
+		return "", "", 0, nil
+	}
+	n := New()
+	cfg := &config.Config{
+		Node: config.Node{
+			Package: []config.NodePackage{
+				{Name: "eslint", Manager: "npm"},
+				{Name: "prettier", Manager: "npm"},
+			},
+		},
+	}
+	rep, err := n.PendingUpgrades(cfg, f.Runner)
+	if err != nil {
+		t.Fatalf("PendingUpgrades: %v", err)
+	}
+	if rep.Plugin != "node" {
+		t.Errorf("Plugin = %q", rep.Plugin)
+	}
+	if len(rep.Operations) != 2 {
+		t.Fatalf("got %d ops, want 2", len(rep.Operations))
+	}
+	// Check first op (alphabetical: eslint before prettier)
+	if rep.Operations[0].Target != "eslint" {
+		t.Errorf("Target[0] = %q", rep.Operations[0].Target)
+	}
+	if rep.Operations[0].Kind != plugin.OpUpdate {
+		t.Error("should be OpUpdate")
+	}
+	if !strings.Contains(rep.Operations[0].Detail, "8.50.0") {
+		t.Error("missing current version")
+	}
+	if !strings.Contains(rep.Operations[0].Detail, "via npm") {
+		t.Error("missing 'via npm'")
+	}
+	if rep.Operations[1].Target != "prettier" {
+		t.Errorf("Target[1] = %q", rep.Operations[1].Target)
+	}
+	if !rep.HasUpgrades() {
+		t.Error("HasUpgrades should be true")
+	}
+}
+
+func TestPendingUpgrades_YarnParsesTable(t *testing.T) {
+	prev := runner.LookPath
+	runner.LookPath = func(name string) (string, error) { return "/usr/bin/" + name, nil }
+	t.Cleanup(func() { runner.LookPath = prev })
+
+	f := runner.NewFake()
+	f.Respond = func(name string, args []string) (string, string, int, error) {
+		if name == "yarn" && len(args) >= 1 && args[0] == "outdated" {
+			return "Package  Current  Wanted  Latest  URL\neslint   8.50.0  8.57.0  9.0.0   https://eslint.org\n", "", 0, nil
+		}
+		return "", "", 0, nil
+	}
+	n := New()
+	cfg := &config.Config{
+		Node: config.Node{
+			Package: []config.NodePackage{
+				{Name: "eslint", Manager: "yarn"},
+			},
+		},
+	}
+	rep, err := n.PendingUpgrades(cfg, f.Runner)
+	if err != nil {
+		t.Fatalf("PendingUpgrades: %v", err)
+	}
+	if len(rep.Operations) != 1 {
+		t.Fatalf("got %d ops, want 1", len(rep.Operations))
+	}
+	if rep.Operations[0].Target != "eslint" {
+		t.Errorf("Target = %q", rep.Operations[0].Target)
+	}
+	if !strings.Contains(rep.Operations[0].Detail, "via yarn") {
+		t.Error("missing 'via yarn'")
+	}
+}
+
+func TestPendingUpgrades_BestEffortFailsSilently(t *testing.T) {
+	prev := runner.LookPath
+	runner.LookPath = func(name string) (string, error) { return "/usr/bin/" + name, nil }
+	t.Cleanup(func() { runner.LookPath = prev })
+
+	f := runner.NewFake()
+	f.Respond = func(name string, args []string) (string, string, int, error) {
+		// npm outdated fails — should be silently skipped
+		return "", "", 1, runner.NewExitError(1, "outdated failed")
+	}
+	n := New()
+	cfg := &config.Config{
+		Node: config.Node{
+			Package: []config.NodePackage{
+				{Name: "eslint", Manager: "npm"},
+			},
+		},
+	}
+	rep, err := n.PendingUpgrades(cfg, f.Runner)
+	if err != nil {
+		t.Fatalf("best-effort should not return error: %v", err)
+	}
+	if len(rep.Operations) != 0 {
+		t.Errorf("expected 0 ops on failure, got %d", len(rep.Operations))
+	}
+}
+
+func TestPendingUpgrades_NoDeclaredPackages(t *testing.T) {
+	prev := runner.LookPath
+	runner.LookPath = func(name string) (string, error) { return "/usr/bin/" + name, nil }
+	t.Cleanup(func() { runner.LookPath = prev })
+
+	n := New()
+	cfg := &config.Config{Node: config.Node{Packages: []string{}}}
+	rep, err := n.PendingUpgrades(cfg, runner.NewFake().Runner)
+	if err != nil {
+		t.Fatalf("PendingUpgrades: %v", err)
+	}
+	if len(rep.Operations) != 0 {
+		t.Errorf("expected 0 ops, got %d", len(rep.Operations))
+	}
+	if rep.HasUpgrades() {
+		t.Error("HasUpgrades should be false")
+	}
 }

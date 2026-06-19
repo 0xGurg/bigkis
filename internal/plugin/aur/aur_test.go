@@ -527,3 +527,89 @@ func countCallsWithArgs(calls []runner.FakeCall, name, firstArg string) int {
 	}
 	return n
 }
+
+func TestPendingUpgrades_ParsesOutput(t *testing.T) {
+	stubLookPath(t, map[string]bool{"pacman": true, "yay": true})
+	f := runner.NewFake()
+	f.Respond = func(name string, args []string) (string, string, int, error) {
+		if name == "yay" && len(args) >= 1 && args[0] == "-Qua" {
+			return "neovim 0.9.5-1 -> 0.10.0-1\ngit 2.44.0-1 -> 2.45.0-1\n", "", 0, nil
+		}
+		return "", "", 0, nil
+	}
+	a := New()
+	cfg := &config.Config{Settings: config.Settings{AURHelper: "yay"}}
+	rep, err := a.PendingUpgrades(cfg, f.Runner)
+	if err != nil {
+		t.Fatalf("PendingUpgrades: %v", err)
+	}
+	if rep.Plugin != "aur" {
+		t.Errorf("Plugin = %q, want aur", rep.Plugin)
+	}
+	if len(rep.Operations) != 2 {
+		t.Fatalf("got %d ops, want 2", len(rep.Operations))
+	}
+	if rep.Operations[0].Kind != plugin.OpUpdate {
+		t.Error("op should be OpUpdate")
+	}
+	if rep.Operations[0].Target != "neovim" {
+		t.Errorf("Target = %q", rep.Operations[0].Target)
+	}
+	if !rep.HasUpgrades() {
+		t.Error("HasUpgrades should be true")
+	}
+}
+
+func TestPendingUpgrades_NoHelperConfigured(t *testing.T) {
+	stubLookPath(t, nil)
+	f := runner.NewFake()
+	a := New()
+	cfg := &config.Config{Settings: config.Settings{AURHelper: ""}}
+	rep, err := a.PendingUpgrades(cfg, f.Runner)
+	if err != nil {
+		t.Fatalf("PendingUpgrades: %v", err)
+	}
+	if len(rep.Operations) != 0 {
+		t.Errorf("expected 0 ops, got %d", len(rep.Operations))
+	}
+	if rep.HasUpgrades() {
+		t.Error("HasUpgrades should be false")
+	}
+}
+
+func TestPendingUpgrades_NoUpgradesReturnsEmpty(t *testing.T) {
+	stubLookPath(t, map[string]bool{"pacman": true, "yay": true})
+	f := runner.NewFake()
+	f.Respond = func(name string, args []string) (string, string, int, error) {
+		if name == "yay" && len(args) >= 1 && args[0] == "-Qua" {
+			return "", "", 1, runner.NewExitError(1, "no upgrades")
+		}
+		return "", "", 0, nil
+	}
+	a := New()
+	cfg := &config.Config{Settings: config.Settings{AURHelper: "yay"}}
+	rep, err := a.PendingUpgrades(cfg, f.Runner)
+	if err != nil {
+		t.Fatalf("exit 1 + empty stdout should not be error: %v", err)
+	}
+	if len(rep.Operations) != 0 {
+		t.Errorf("expected 0 ops, got %d", len(rep.Operations))
+	}
+}
+
+func TestPendingUpgrades_CommandFailsReturnsError(t *testing.T) {
+	stubLookPath(t, map[string]bool{"pacman": true, "yay": true})
+	f := runner.NewFake()
+	f.Respond = func(name string, args []string) (string, string, int, error) {
+		if name == "yay" && len(args) >= 1 && args[0] == "-Qua" {
+			return "some error", "", 127, runner.NewExitError(127, "command failed")
+		}
+		return "", "", 0, nil
+	}
+	a := New()
+	cfg := &config.Config{Settings: config.Settings{AURHelper: "yay"}}
+	_, err := a.PendingUpgrades(cfg, f.Runner)
+	if err == nil {
+		t.Fatal("expected error for exit 127")
+	}
+}
