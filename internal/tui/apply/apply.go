@@ -210,6 +210,7 @@ type applyReviewModel struct {
 	checkedOps    map[int]map[string]bool // per-plugin checked state by "kind:target"
 	focusRight    bool                    // false = left pane (plugin list), true = right pane (op list)
 	filteredPlans []PluginPlan            // filtered plans with only checked ops
+	statusMessage string                  // transient feedback shown for one frame
 }
 
 // ──────────────────────────────────────────────
@@ -308,6 +309,8 @@ func (m *applyReviewModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 
+	m.statusMessage = ""
+
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
 		m.width = msg.Width
@@ -394,7 +397,7 @@ func (m *applyReviewModel) updateSelective(msg tea.KeyMsg) (tea.Model, tea.Cmd) 
 		case key.Matches(msg, m.keymap.Proceed):
 			// Enter: proceed with checked subset
 			if !m.hasAnyChecked() {
-				// Nothing checked — silently ignore Enter
+				m.statusMessage = "nothing selected — use space to toggle operations"
 				return m, nil
 			}
 			m.buildFilteredPlans()
@@ -473,7 +476,12 @@ func (m *applyReviewModel) View() string {
 		}
 	}
 
-	return header + "\n" + content + "\n\n" + footer
+	status := ""
+	if m.statusMessage != "" {
+		status = "\n" + tui.Theme.Warn.Render(m.statusMessage)
+	}
+
+	return header + "\n" + content + "\n\n" + footer + status
 }
 
 // ──────────────────────────────────────────────
