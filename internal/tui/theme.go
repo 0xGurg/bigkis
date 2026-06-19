@@ -63,12 +63,3 @@ var Theme = struct {
 		BorderForeground(lipgloss.Color("8")), // grey
 }
 
-// StyleAddPrefix returns a styled "+ <text>" line.
-func StyleAddPrefix(s string) string {
-	return Theme.Add.Render("+") + " " + s
-}
-
-// StyleRemovePrefix returns a styled "- <text>" line.
-func StyleRemovePrefix(s string) string {
-	return Theme.Remove.Render("-") + " " + s
-}
