@@ -110,6 +110,7 @@ func statusCommand() *cli.Command {
 		Usage: "report drift between the declared config and the system, without changing anything",
 		Flags: []cli.Flag{
 			&cli.BoolFlag{Name: "json", Usage: "emit machine-readable JSON to stdout (logs go to stderr)"},
+			&cli.BoolFlag{Name: "quiet", Usage: "suppress info-level log output"},
 			&cli.BoolFlag{Name: "exit-on-drift", Usage: "exit with code 3 instead of 0 when drift is detected"},
 			&cli.StringSliceFlag{Name: "only", Usage: "only check these plugins (comma-separated)"},
 			&cli.StringSliceFlag{Name: "skip", Usage: "skip these plugins (comma-separated)"},
@@ -123,11 +124,30 @@ func checkCommand() *cli.Command {
 	return &cli.Command{
 		Name:  "check",
 		Usage: "validate the config (parse, schema, includes, host overlay, groups). No state, no system access.",
+		Flags: []cli.Flag{
+			&cli.BoolFlag{Name: "json", Usage: "emit machine-readable JSON to stdout"},
+		},
 		Action: func(c *cli.Context) error {
 			cfg, err := config.Load(c.String("config"))
 			if err != nil {
 				return err
 			}
+
+			if c.Bool("json") {
+				type checkResult struct {
+					OK    bool     `json:"ok"`
+					Path  string   `json:"path"`
+					Files []string `json:"files"`
+				}
+				enc := json.NewEncoder(os.Stdout)
+				enc.SetIndent("", "  ")
+				return enc.Encode(checkResult{
+					OK:    true,
+					Path:  cfg.Path,
+					Files: cfg.SourcePaths,
+				})
+			}
+
 			fmt.Printf("ok: %s\n", cfg.Path)
 			if len(cfg.SourcePaths) > 1 {
 				fmt.Println("included:")
@@ -230,6 +250,9 @@ func explainCommand() *cli.Command {
 		Name:      "explain",
 		Usage:     "explain a single package: declared, installed, managed, status",
 		ArgsUsage: "<package>",
+		Flags: []cli.Flag{
+			&cli.BoolFlag{Name: "json", Usage: "emit machine-readable JSON to stdout"},
+		},
 		Action: func(c *cli.Context) error {
 			if c.NArg() < 1 {
 				return fmt.Errorf("usage: bigkis explain <package>")
@@ -239,6 +262,13 @@ func explainCommand() *cli.Command {
 				return err
 			}
 			r := explain.Inspect(c.Args().First(), cfg, st)
+
+			if c.Bool("json") {
+				enc := json.NewEncoder(os.Stdout)
+				enc.SetIndent("", "  ")
+				return enc.Encode(r)
+			}
+
 			fmt.Print(r.Render())
 			return nil
 		},
@@ -269,10 +299,13 @@ func rollbackCommand() *cli.Command {
 					if _, err := program.Run(); err != nil {
 						return err
 					}
-					if model.Confirmed() {
-						return rollback.Run(model.RunTarget())
-					}
-					return nil
+			if model.Confirmed() {
+				return rollback.Run(model.RunTarget())
+			}
+			if err := model.Err(); err != nil {
+				return err
+			}
+			return nil
 				}
 				// Fall through to existing listing behavior
 			}
