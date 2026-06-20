@@ -299,13 +299,13 @@ func rollbackCommand() *cli.Command {
 					if _, err := program.Run(); err != nil {
 						return err
 					}
-			if model.Confirmed() {
-				return rollback.Run(model.RunTarget())
-			}
-			if err := model.Err(); err != nil {
-				return err
-			}
-			return nil
+					if model.Confirmed() {
+						return rollback.Run(model.RunTarget())
+					}
+					if err := model.Err(); err != nil {
+						return err
+					}
+					return nil
 				}
 				// Fall through to existing listing behavior
 			}
