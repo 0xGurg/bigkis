@@ -22,6 +22,8 @@ on:
 jobs:
   release:
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
     env:
       HAS_MINISIGN: ${{ secrets.MINISIGN_PRIVATE_KEY != '' }}
       HAS_AUR_KEY: ${{ secrets.AUR_SSH_PRIVATE_KEY != '' }}
