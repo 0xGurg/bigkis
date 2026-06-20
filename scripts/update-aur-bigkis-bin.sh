@@ -62,7 +62,7 @@ conflicts=('bigkis')
 options=('!strip' '!debug')
 source=(
   "bigkis-linux-amd64::${url}/releases/download/v${pkgver}/bigkis-linux-amd64"
-  "upstream-LICENSE::${url}/raw/tag/v${pkgver}/LICENSE"
+  "upstream-LICENSE::https://raw.githubusercontent.com/0xGurg/bigkis/v${pkgver}/LICENSE"
 )
 sha256sums=(
   '@@BIN_SHA@@'
@@ -103,7 +103,7 @@ pkgbase = bigkis-bin
 	options = !strip
 	options = !debug
 	source = bigkis-linux-amd64::${pkgurl}/releases/download/${version_tag}/bigkis-linux-amd64
-	source = upstream-LICENSE::${pkgurl}/raw/tag/${version_tag}/LICENSE
+	source = upstream-LICENSE::https://raw.githubusercontent.com/0xGurg/bigkis/${version_tag}/LICENSE
 	sha256sums = ${bin_sha}
 	sha256sums = ${license_sha}
 
