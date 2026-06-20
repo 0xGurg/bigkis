@@ -62,4 +62,3 @@ var Theme = struct {
 		Border(lipgloss.RoundedBorder()).
 		BorderForeground(lipgloss.Color("8")), // grey
 }
-
