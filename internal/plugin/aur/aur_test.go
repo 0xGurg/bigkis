@@ -530,6 +530,7 @@ func countCallsWithArgs(calls []runner.FakeCall, name, firstArg string) int {
 
 func TestPendingUpgrades_ParsesOutput(t *testing.T) {
 	stubLookPath(t, map[string]bool{"pacman": true, "yay": true})
+	stubProcessUser(t, 1000, map[string]string{})
 	f := runner.NewFake()
 	f.Respond = func(name string, args []string) (string, string, int, error) {
 		if name == "yay" && len(args) >= 1 && args[0] == "-Qua" {
@@ -579,6 +580,7 @@ func TestPendingUpgrades_NoHelperConfigured(t *testing.T) {
 
 func TestPendingUpgrades_NoUpgradesReturnsEmpty(t *testing.T) {
 	stubLookPath(t, map[string]bool{"pacman": true, "yay": true})
+	stubProcessUser(t, 1000, map[string]string{})
 	f := runner.NewFake()
 	f.Respond = func(name string, args []string) (string, string, int, error) {
 		if name == "yay" && len(args) >= 1 && args[0] == "-Qua" {
@@ -599,6 +601,7 @@ func TestPendingUpgrades_NoUpgradesReturnsEmpty(t *testing.T) {
 
 func TestPendingUpgrades_CommandFailsReturnsError(t *testing.T) {
 	stubLookPath(t, map[string]bool{"pacman": true, "yay": true})
+	stubProcessUser(t, 1000, map[string]string{})
 	f := runner.NewFake()
 	f.Respond = func(name string, args []string) (string, string, int, error) {
 		if name == "yay" && len(args) >= 1 && args[0] == "-Qua" {
@@ -611,5 +614,8 @@ func TestPendingUpgrades_CommandFailsReturnsError(t *testing.T) {
 	_, err := a.PendingUpgrades(cfg, f.Runner)
 	if err == nil {
 		t.Fatal("expected error for exit 127")
+	}
+	if !strings.Contains(err.Error(), "yay -Qua") {
+		t.Errorf("expected yay -Qua error, got: %v", err)
 	}
 }
