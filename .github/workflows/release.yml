@@ -22,6 +22,9 @@ on:
 jobs:
   release:
     runs-on: ubuntu-latest
+    env:
+      HAS_MINISIGN: ${{ secrets.MINISIGN_PRIVATE_KEY != '' }}
+      HAS_AUR_KEY: ${{ secrets.AUR_SSH_PRIVATE_KEY != '' }}
     steps:
       - name: checkout
         uses: actions/checkout@v4
@@ -65,13 +68,13 @@ jobs:
       # and MINISIGN_PASSWORD. Skipped silently when MINISIGN_PRIVATE_KEY is
       # not set so installs without signing keep working.
       - name: install minisign
-        if: secrets.MINISIGN_PRIVATE_KEY != ''
+        if: env.HAS_MINISIGN == 'true'
         run: |
           sudo apt-get update -y
           sudo apt-get install -y minisign
 
       - name: sign checksums.txt
-        if: secrets.MINISIGN_PRIVATE_KEY != ''
+        if: env.HAS_MINISIGN == 'true'
         env:
           MINISIGN_PRIVATE_KEY: ${{ secrets.MINISIGN_PRIVATE_KEY }}
           MINISIGN_PASSWORD: ${{ secrets.MINISIGN_PASSWORD }}
@@ -95,7 +98,7 @@ jobs:
           token: ${{ secrets.GITHUB_TOKEN }}
 
       - name: wait for release asset availability
-        if: secrets.AUR_SSH_PRIVATE_KEY != ''
+        if: env.HAS_AUR_KEY == 'true'
         env:
           VERSION: ${{ github.ref_name }}
         run: |
@@ -112,7 +115,7 @@ jobs:
           done
 
       - name: setup AUR SSH credentials
-        if: secrets.AUR_SSH_PRIVATE_KEY != ''
+        if: env.HAS_AUR_KEY == 'true'
         env:
           AUR_SSH_PRIVATE_KEY: ${{ secrets.AUR_SSH_PRIVATE_KEY }}
         run: |
@@ -124,7 +127,7 @@ jobs:
           ssh-keyscan aur.archlinux.org >> "$HOME/.ssh/known_hosts"
 
       - name: update bigkis-bin AUR package
-        if: secrets.AUR_SSH_PRIVATE_KEY != ''
+        if: env.HAS_AUR_KEY == 'true'
         env:
           VERSION: ${{ github.ref_name }}
           GIT_AUTHOR_NAME: bigkis-release-bot
