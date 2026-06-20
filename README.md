@@ -20,7 +20,7 @@ systemd units, users, or PGP keys. Use a separate dotfile tool for those.
 ## Quick install
 
 ```sh
-curl -fsSL https://codeberg.org/gurg/bigkis/raw/branch/main/install.sh | sh
+curl -fsSL https://github.com/0xGurg/bigkis/raw/branch/main/install.sh | sh
 ```
 
 To pin a version or change install location:
@@ -31,7 +31,7 @@ BIGKIS_INSTALL_DIR="$HOME/.local/bin" sh install.sh
 ```
 
 Other install variants live in the
-[Installation guide](https://codeberg.org/gurg/bigkis/wiki/Installation).
+[Installation guide](https://github.com/0xGurg/bigkis/wiki/Installation).
 
 ## Quick usage
 
@@ -63,34 +63,34 @@ bigkis apply --select                          # plan review with per-operation 
 
 `bigkis` returns distinct exit codes (`0` ok, `1` error, `2` user-cancelled,
 `3` drift) so wrappers can branch precisely. See
-[Exit Codes](https://codeberg.org/gurg/bigkis/wiki/Exit-Codes).
+[Exit Codes](https://github.com/0xGurg/bigkis/wiki/Exit-Codes).
 
 ## Documentation
 
 Full docs live on the
-[Codeberg wiki](https://codeberg.org/gurg/bigkis/wiki):
+[GitHub wiki](https://github.com/0xGurg/bigkis/wiki):
 
-- [Installation](https://codeberg.org/gurg/bigkis/wiki/Installation) -
+- [Installation](https://github.com/0xGurg/bigkis/wiki/Installation) -
   bootstrap, manual binary, declarative AUR, source build and cross-compile.
-- [Configuration](https://codeberg.org/gurg/bigkis/wiki/Configuration) -
+- [Configuration](https://github.com/0xGurg/bigkis/wiki/Configuration) -
   `system.toml` schema and config search paths.
-- [Doctor](https://codeberg.org/gurg/bigkis/wiki/Doctor) - preflight checks
+- [Doctor](https://github.com/0xGurg/bigkis/wiki/Doctor) - preflight checks
   before the first apply.
-- [Pacman Baseline](https://codeberg.org/gurg/bigkis/wiki/Pacman-Baseline) -
+- [Pacman Baseline](https://github.com/0xGurg/bigkis/wiki/Pacman-Baseline) -
   choosing your explicit baseline, bootstrapping from an existing Arch install,
   and the `ignored` list.
-- [Removals and State](https://codeberg.org/gurg/bigkis/wiki/Removals-and-State) -
+- [Removals and State](https://github.com/0xGurg/bigkis/wiki/Removals-and-State) -
   how `apply` removes packages per plugin and where state is stored.
-- [Rollback](https://codeberg.org/gurg/bigkis/wiki/Rollback) - rollback
+- [Rollback](https://github.com/0xGurg/bigkis/wiki/Rollback) - rollback
   scripts written before each apply, and how to run them.
-- [Explain](https://codeberg.org/gurg/bigkis/wiki/Explain) and
-  [Import](https://codeberg.org/gurg/bigkis/wiki/Import) - per-package
+- [Explain](https://github.com/0xGurg/bigkis/wiki/Explain) and
+  [Import](https://github.com/0xGurg/bigkis/wiki/Import) - per-package
   debugging and bootstrapping a config from an existing system.
-- [Completion](https://codeberg.org/gurg/bigkis/wiki/Completion) - bash /
+- [Completion](https://github.com/0xGurg/bigkis/wiki/Completion) - bash /
   zsh / fish completion.
-- [Exit Codes](https://codeberg.org/gurg/bigkis/wiki/Exit-Codes) - the
+- [Exit Codes](https://github.com/0xGurg/bigkis/wiki/Exit-Codes) - the
   contract for `0` / `1` / `2` / `3` exits.
-- [Release Assets](https://codeberg.org/gurg/bigkis/wiki/Release-Assets) -
+- [Release Assets](https://github.com/0xGurg/bigkis/wiki/Release-Assets) -
   asset naming, `checksums.txt`, and optional minisign signature.
 
 ## License

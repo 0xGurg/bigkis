@@ -8,7 +8,7 @@ import (
 	"strings"
 	"testing"
 
-	"codeberg.org/gurg/bigkis/internal/config"
+	"github.com/0xGurg/bigkis/internal/config"
 )
 
 func stubCommands(t *testing.T, available map[string]bool, outputs map[string]string) {

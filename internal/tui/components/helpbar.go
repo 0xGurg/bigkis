@@ -6,7 +6,7 @@ import (
 
 	"github.com/charmbracelet/lipgloss"
 
-	"codeberg.org/gurg/bigkis/internal/tui"
+	"github.com/0xGurg/bigkis/internal/tui"
 )
 
 // HelpBinding describes a single key binding for the help bar.

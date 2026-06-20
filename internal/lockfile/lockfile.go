@@ -14,8 +14,8 @@ import (
 	"strings"
 	"time"
 
-	"codeberg.org/gurg/bigkis/internal/config"
-	"codeberg.org/gurg/bigkis/internal/state"
+	"github.com/0xGurg/bigkis/internal/config"
+	"github.com/0xGurg/bigkis/internal/state"
 )
 
 const SchemaVersion = 1

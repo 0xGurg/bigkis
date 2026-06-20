@@ -4,8 +4,8 @@ import (
 	"strings"
 	"testing"
 
-	"codeberg.org/gurg/bigkis/internal/config"
-	"codeberg.org/gurg/bigkis/internal/state"
+	"github.com/0xGurg/bigkis/internal/config"
+	"github.com/0xGurg/bigkis/internal/state"
 )
 
 // These tests focus on the pure-logic aspects of explain: declared/managed

@@ -20,9 +20,9 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 
-	"codeberg.org/gurg/bigkis/internal/plugin"
-	"codeberg.org/gurg/bigkis/internal/tui"
-	"codeberg.org/gurg/bigkis/internal/tui/components"
+	"github.com/0xGurg/bigkis/internal/plugin"
+	"github.com/0xGurg/bigkis/internal/tui"
+	"github.com/0xGurg/bigkis/internal/tui/components"
 )
 
 // ──────────────────────────────────────────────

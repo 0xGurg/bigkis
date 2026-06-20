@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	"codeberg.org/gurg/bigkis/internal/config"
+	"github.com/0xGurg/bigkis/internal/config"
 )
 
 // stubEnv builds a deterministic Env for the table tests below. Every real

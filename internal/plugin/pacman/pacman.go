@@ -5,12 +5,12 @@ import (
 	"fmt"
 	"strings"
 
-	"codeberg.org/gurg/bigkis/internal/config"
-	"codeberg.org/gurg/bigkis/internal/plan"
-	"codeberg.org/gurg/bigkis/internal/plugin"
-	"codeberg.org/gurg/bigkis/internal/runner"
-	"codeberg.org/gurg/bigkis/internal/state"
-	"codeberg.org/gurg/bigkis/internal/ui"
+	"github.com/0xGurg/bigkis/internal/config"
+	"github.com/0xGurg/bigkis/internal/plan"
+	"github.com/0xGurg/bigkis/internal/plugin"
+	"github.com/0xGurg/bigkis/internal/runner"
+	"github.com/0xGurg/bigkis/internal/state"
+	"github.com/0xGurg/bigkis/internal/ui"
 )
 
 type Pacman struct {

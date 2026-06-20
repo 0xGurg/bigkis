@@ -1,7 +1,7 @@
 #!/bin/sh
 set -eu
 
-repo="${BIGKIS_REPO:-https://codeberg.org/gurg/bigkis}"
+repo="${BIGKIS_REPO:-https://github.com/0xGurg/bigkis}"
 version="${BIGKIS_VERSION:-latest}"
 install_dir="${BIGKIS_INSTALL_DIR:-/usr/local/bin}"
 binary_name="${BIGKIS_BINARY:-bigkis}"
@@ -95,11 +95,8 @@ asset="bigkis-$target"
 
 case "$version" in
   latest)
-    # Codeberg's /releases/latest/download endpoint does not reliably
-    # redirect to assets. Resolve the latest tag via the API first.
-    # Derive the API URL from the repo URL:
-    #   https://codeberg.org/gurg/bigkis → https://codeberg.org/api/v1/repos/gurg/bigkis
-    api_url="$(echo "$repo" | sed 's|^\(https\?://[^/]*\)/\(.*\)|\1/api/v1/repos/\2|')/releases/latest"
+    # Resolve the latest tag via the GitHub API.
+    api_url="https://api.github.com/repos/0xGurg/bigkis/releases/latest"
     if command -v curl >/dev/null 2>&1; then
       resolved="$(curl -fsSL "$api_url" 2>/dev/null | grep -o '"tag_name":"[^"]*"' | head -1 | sed 's/"tag_name":"//;s/"//')" || true
     elif command -v wget >/dev/null 2>&1; then

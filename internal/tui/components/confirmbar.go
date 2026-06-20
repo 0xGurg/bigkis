@@ -9,7 +9,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 
-	"codeberg.org/gurg/bigkis/internal/tui"
+	"github.com/0xGurg/bigkis/internal/tui"
 )
 
 // ConfirmResult is the outcome of a confirmation prompt.

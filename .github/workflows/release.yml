@@ -1,18 +1,12 @@
 name: release
 
-# Releases are cut by pushing an annotated version tag (e.g. v0.6.2). This
+# Releases are cut by pushing an annotated version tag (e.g. v0.7.6). This
 # workflow builds static linux/amd64 and linux/arm64 binaries, checksums them,
-# optionally minisigns checksums.txt, and publishes Codeberg release assets.
+# optionally minisigns checksums.txt, and publishes GitHub release assets.
 #
-# Release notes are written directly on the Codeberg releases page when you
-# create a tag. There is no CHANGELOG.md — the Codeberg release body is the
-# source of truth for what changed.
-#
-# Required secret: GITHUB_TOKEN is auto-provided by Forgejo Actions and has
-# enough scope on the current repo to create releases. If your instance
-# does not auto-provide it, create a personal access token with
-# `write:repository` and add it as a secret named GITHUB_TOKEN (or change
-# the `token:` value below to point at a different secret name).
+# Release notes are written directly on the GitHub releases page when you
+# create a tag. There is no CHANGELOG.md — the release body is the source of
+# truth for what changed.
 #
 # Optional secret for automatic AUR updates after a successful tag-based
 # release publish:
@@ -26,13 +20,13 @@ on:
 
 jobs:
   release:
-    runs-on: codeberg-medium
+    runs-on: ubuntu-latest
     steps:
       - name: checkout
-        uses: https://code.forgejo.org/actions/checkout@v4
+        uses: actions/checkout@v4
 
       - name: setup go
-        uses: https://code.forgejo.org/actions/setup-go@v5
+        uses: actions/setup-go@v5
         with:
           go-version: "1.26"
 
@@ -85,7 +79,6 @@ jobs:
         run: |
           umask 077
           printf '%s\n' "$MINISIGN_PRIVATE_KEY" > minisign.key
-          # -W skips the password prompt when MINISIGN_PASSWORD is set in env.
           printf '%s\n' "$MINISIGN_PASSWORD" | minisign -S \
             -s minisign.key \
             -m checksums.txt \
@@ -93,16 +86,12 @@ jobs:
           rm -f minisign.key
 
       - name: publish release
-        uses: https://code.forgejo.org/actions/forgejo-release@v2
+        uses: softprops/action-gh-release@v2
         with:
-          url: https://codeberg.org
-          repo: ${{ github.repository }}
-          direction: upload
-          release-dir: dist
-          tag: ${{ github.ref_name }}
-          title: ${{ github.ref_name }}
+          files: dist/*
+          tag_name: ${{ github.ref_name }}
+          name: ${{ github.ref_name }}
           token: ${{ secrets.GITHUB_TOKEN }}
-          override: true
 
       - name: wait for release asset availability
         if: secrets.AUR_SSH_PRIVATE_KEY != ''
@@ -110,7 +99,7 @@ jobs:
           VERSION: ${{ github.ref_name }}
         run: |
           set -eu
-          url="https://codeberg.org/gurg/bigkis/releases/download/${VERSION}/bigkis-linux-amd64"
+          url="https://github.com/0xGurg/bigkis/releases/download/${VERSION}/bigkis-linux-amd64"
           i=0
           until curl -IfsSL "$url" >/dev/null 2>&1; do
             i=$((i + 1))
@@ -138,9 +127,9 @@ jobs:
         env:
           VERSION: ${{ github.ref_name }}
           GIT_AUTHOR_NAME: bigkis-release-bot
-          GIT_AUTHOR_EMAIL: bigkis-release-bot@users.noreply.codeberg.org
+          GIT_AUTHOR_EMAIL: bigkis-release-bot@users.noreply.github.com
           GIT_COMMITTER_NAME: bigkis-release-bot
-          GIT_COMMITTER_EMAIL: bigkis-release-bot@users.noreply.codeberg.org
+          GIT_COMMITTER_EMAIL: bigkis-release-bot@users.noreply.github.com
         run: |
           set -eu
           export GIT_SSH_COMMAND="ssh -i $HOME/.ssh/id_aur -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes"

@@ -12,9 +12,9 @@ import (
 	"strings"
 	"time"
 
-	"codeberg.org/gurg/bigkis/internal/config"
-	"codeberg.org/gurg/bigkis/internal/plugin"
-	"codeberg.org/gurg/bigkis/internal/state"
+	"github.com/0xGurg/bigkis/internal/config"
+	"github.com/0xGurg/bigkis/internal/plugin"
+	"github.com/0xGurg/bigkis/internal/state"
 )
 
 // MaxRetained controls how many rollback scripts are kept on disk. The oldest

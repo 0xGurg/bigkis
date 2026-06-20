@@ -12,9 +12,9 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 
-	rollbackdata "codeberg.org/gurg/bigkis/internal/rollback"
-	"codeberg.org/gurg/bigkis/internal/tui"
-	"codeberg.org/gurg/bigkis/internal/tui/components"
+	rollbackdata "github.com/0xGurg/bigkis/internal/rollback"
+	"github.com/0xGurg/bigkis/internal/tui"
+	"github.com/0xGurg/bigkis/internal/tui/components"
 )
 
 // ──────────────────────────────────────────────

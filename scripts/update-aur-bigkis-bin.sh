@@ -20,7 +20,7 @@ esac
 script_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 repo_dir=$(CDPATH= cd -- "$script_dir/.." && pwd)
 pkgver="${version_tag#v}"
-pkgurl='https://codeberg.org/gurg/bigkis'
+pkgurl='https://github.com/0xGurg/bigkis'
 bin_path="$repo_dir/dist/bigkis-linux-amd64"
 license_path="$repo_dir/LICENSE"
 
@@ -39,7 +39,7 @@ license_sha=$(sha256sum "$license_path" | awk '{print $1}')
 mkdir -p "$target_dir"
 
 cat > "$target_dir/PKGBUILD" <<'EOF'
-# Maintainer: gurg <gurg@noreply.codeberg.org>
+# Maintainer: gurg <gurg@noreply.github.com>
 
 pkgname=bigkis-bin
 pkgver=@@PKGVER@@

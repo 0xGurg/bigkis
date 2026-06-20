@@ -7,8 +7,8 @@ import (
 	"testing"
 	"time"
 
-	"codeberg.org/gurg/bigkis/internal/config"
-	"codeberg.org/gurg/bigkis/internal/plugin"
+	"github.com/0xGurg/bigkis/internal/config"
+	"github.com/0xGurg/bigkis/internal/plugin"
 )
 
 func TestOpsForReport_InvertsOperations(t *testing.T) {

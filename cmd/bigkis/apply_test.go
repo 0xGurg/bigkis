@@ -11,11 +11,11 @@ import (
 
 	"github.com/urfave/cli/v2"
 
-	"codeberg.org/gurg/bigkis/internal/config"
-	"codeberg.org/gurg/bigkis/internal/plugin"
-	"codeberg.org/gurg/bigkis/internal/runner"
-	"codeberg.org/gurg/bigkis/internal/state"
-	"codeberg.org/gurg/bigkis/internal/ui"
+	"github.com/0xGurg/bigkis/internal/config"
+	"github.com/0xGurg/bigkis/internal/plugin"
+	"github.com/0xGurg/bigkis/internal/runner"
+	"github.com/0xGurg/bigkis/internal/state"
+	"github.com/0xGurg/bigkis/internal/ui"
 )
 
 // fakePlugin is a Plugin used to drive applyStages from tests. It records

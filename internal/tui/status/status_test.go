@@ -7,7 +7,7 @@ import (
 	"github.com/charmbracelet/bubbles/key"
 	tea "github.com/charmbracelet/bubbletea"
 
-	"codeberg.org/gurg/bigkis/internal/plugin"
+	"github.com/0xGurg/bigkis/internal/plugin"
 )
 
 // ──────────────────────────────────────────────

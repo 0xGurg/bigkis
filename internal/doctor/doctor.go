@@ -16,7 +16,7 @@ import (
 	"sort"
 	"strings"
 
-	"codeberg.org/gurg/bigkis/internal/config"
+	"github.com/0xGurg/bigkis/internal/config"
 )
 
 // Status is the outcome of a single check.

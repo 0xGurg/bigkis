@@ -8,8 +8,8 @@ import (
 	"sort"
 	"strings"
 
-	"codeberg.org/gurg/bigkis/internal/config"
-	"codeberg.org/gurg/bigkis/internal/state"
+	"github.com/0xGurg/bigkis/internal/config"
+	"github.com/0xGurg/bigkis/internal/state"
 )
 
 // Result is the structured outcome of inspecting a package.

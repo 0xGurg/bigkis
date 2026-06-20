@@ -7,13 +7,13 @@ on:
 
 jobs:
   test:
-    runs-on: codeberg-medium
+    runs-on: ubuntu-latest
     steps:
       - name: checkout
-        uses: https://code.forgejo.org/actions/checkout@v4
+        uses: actions/checkout@v4
 
       - name: setup go
-        uses: https://code.forgejo.org/actions/setup-go@v5
+        uses: actions/setup-go@v5
         with:
           go-version: "1.26"
 
@@ -32,13 +32,13 @@ jobs:
         run: go test -race -timeout 10m ./...
 
   staticcheck:
-    runs-on: codeberg-medium
+    runs-on: ubuntu-latest
     steps:
       - name: checkout
-        uses: https://code.forgejo.org/actions/checkout@v4
+        uses: actions/checkout@v4
 
       - name: setup go
-        uses: https://code.forgejo.org/actions/setup-go@v5
+        uses: actions/setup-go@v5
         with:
           go-version: "1.26"
 

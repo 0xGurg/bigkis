@@ -1,4 +1,4 @@
-module codeberg.org/gurg/bigkis
+module github.com/0xGurg/bigkis
 
 go 1.26.2
 
