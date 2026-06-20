@@ -369,7 +369,7 @@ func (m *applyReviewModel) updateSelective(msg tea.KeyMsg) (tea.Model, tea.Cmd) 
 			// Persist to checkedOps
 			pluginIdx := m.list.Index()
 			op := m.opItems[idx].op
-			key := fmt.Sprintf("%d:%s", op.Kind, op.Target)
+			key := opKey(op)
 			if m.checkedOps[pluginIdx] == nil {
 				m.checkedOps[pluginIdx] = make(map[string]bool)
 			}
@@ -379,7 +379,7 @@ func (m *applyReviewModel) updateSelective(msg tea.KeyMsg) (tea.Model, tea.Cmd) 
 
 		case key.Matches(msg, m.keymap.ToggleAll):
 			// A: toggle all ops in current plugin
-			allChecked := m.allOpsChecked()
+			allChecked := m.currentPluginOpsChecked()
 			pluginIdx := m.list.Index()
 			for i := range m.opItems {
 				m.opItems[i].checked = !allChecked
@@ -388,7 +388,7 @@ func (m *applyReviewModel) updateSelective(msg tea.KeyMsg) (tea.Model, tea.Cmd) 
 				m.checkedOps[pluginIdx] = make(map[string]bool)
 			}
 			for _, item := range m.opItems {
-				key := fmt.Sprintf("%d:%s", item.op.Kind, item.op.Target)
+				key := opKey(item.op)
 				m.checkedOps[pluginIdx][key] = item.checked
 			}
 			m.refreshOpList()
@@ -683,6 +683,13 @@ func (m *applyReviewModel) resizePanes() {
 	}
 }
 
+// opKey creates a deterministic composite key for an operation within a plugin.
+// Format: "kind:target" — unique within a single plugin since Target is a
+// package name and Kind is the op category.
+func opKey(op plugin.Operation) string {
+	return fmt.Sprintf("%d:%s", op.Kind, op.Target)
+}
+
 // ──────────────────────────────────────────────
 // Selective mode helpers (Phase 5)
 // ──────────────────────────────────────────────
@@ -695,7 +702,7 @@ func (m *applyReviewModel) rebuildOpItemsForPlugin(pluginIdx int) {
 	}
 	p := m.plans[pluginIdx]
 	if p.InSync && !p.Upgrades.HasUpgrades() {
-		m.opItems = nil
+		m.opItems = []checkedOp{}
 		m.opList.SetItems([]list.Item{})
 		return
 	}
@@ -707,7 +714,7 @@ func (m *applyReviewModel) rebuildOpItemsForPlugin(pluginIdx int) {
 
 	m.opItems = make([]checkedOp, len(allOps))
 	for i, op := range allOps {
-		key := fmt.Sprintf("%d:%s", op.Kind, op.Target)
+		key := opKey(op)
 		checked := true // default: checked
 		if m.checkedOps[pluginIdx] != nil {
 			if val, ok := m.checkedOps[pluginIdx][key]; ok {
@@ -728,8 +735,8 @@ func (m *applyReviewModel) refreshOpList() {
 	m.opList.SetItems(items)
 }
 
-// allOpsChecked returns true when every op in m.opItems is checked.
-func (m *applyReviewModel) allOpsChecked() bool {
+// currentPluginOpsChecked returns true when every op in m.opItems is checked.
+func (m *applyReviewModel) currentPluginOpsChecked() bool {
 	for _, item := range m.opItems {
 		if !item.checked {
 			return false
@@ -748,7 +755,7 @@ func (m *applyReviewModel) hasAnyChecked() bool {
 		}
 		// Check drift ops
 		for _, op := range p.Report.Operations {
-			key := fmt.Sprintf("%d:%s", op.Kind, op.Target)
+			key := opKey(op)
 			if m.checkedOps[pi] != nil {
 				if checked, ok := m.checkedOps[pi][key]; ok {
 					if checked {
@@ -762,7 +769,7 @@ func (m *applyReviewModel) hasAnyChecked() bool {
 		}
 		// Check upgrade ops
 		for _, op := range p.Upgrades.Operations {
-			key := fmt.Sprintf("%d:%s", op.Kind, op.Target)
+			key := opKey(op)
 			if m.checkedOps[pi] != nil {
 				if checked, ok := m.checkedOps[pi][key]; ok {
 					if checked {
@@ -792,7 +799,7 @@ func (m *applyReviewModel) buildFilteredPlans() {
 
 		var checkedOps []plugin.Operation
 		for _, op := range p.Report.Operations {
-			key := fmt.Sprintf("%d:%s", op.Kind, op.Target)
+			key := opKey(op)
 			if m.checkedOps[pi] != nil {
 				if checked, ok := m.checkedOps[pi][key]; ok {
 					if checked {
