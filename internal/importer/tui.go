@@ -3,7 +3,6 @@ package importer
 import (
 	"errors"
 	"fmt"
-	"io"
 	"sort"
 	"strings"
 
@@ -74,6 +73,9 @@ type pickerItem struct {
 func (i pickerItem) FilterValue() string { return i.name }
 func (i pickerItem) Title() string       { return i.name }
 func (i pickerItem) Description() string { return "" }
+func (i pickerItem) IsChecked() bool     { return i.checked }
+func (i pickerItem) Prefix() string      { return "" }
+func (i pickerItem) PrefixStyle() lipgloss.Style { return lipgloss.Style{} }
 
 // nodeKey returns the composite key for node package selection, mirroring
 // how selectedNode is indexed in importPickerModel.
@@ -84,51 +86,13 @@ func (i pickerItem) nodeKey() string {
 	return i.name + "\x00" + i.manager
 }
 
-// ──────────────────────────────────────────────
-// Custom list delegate for checkboxes
-// ──────────────────────────────────────────────
-
-type checkboxDelegate struct {
-	selectedStyle   lipgloss.Style
-	unselectedStyle lipgloss.Style
-	checkedStyle    lipgloss.Style
-}
-
-func newCheckboxDelegate() checkboxDelegate {
-	return checkboxDelegate{
-		selectedStyle:   tui.Theme.ActiveTab, // green+bold
-		unselectedStyle: lipgloss.NewStyle(),
-		checkedStyle:    tui.Theme.Add, // green
+// newImportDelegate returns a CheckboxDelegate configured for the import picker.
+func newImportDelegate() components.CheckboxDelegate {
+	return components.CheckboxDelegate{
+		SelectedStyle:   tui.Theme.ActiveTab,
+		UnselectedStyle: lipgloss.NewStyle(),
+		CheckedStyle:    tui.Theme.Add,
 	}
-}
-
-func (d checkboxDelegate) Height() int                             { return 1 }
-func (d checkboxDelegate) Spacing() int                            { return 0 }
-func (d checkboxDelegate) Update(_ tea.Msg, _ *list.Model) tea.Cmd { return nil }
-
-func (d checkboxDelegate) Render(w io.Writer, m list.Model, index int, item list.Item) {
-	pi, ok := item.(pickerItem)
-	if !ok {
-		return
-	}
-
-	// Checkbox symbol
-	var check string
-	if pi.checked {
-		check = d.checkedStyle.Render("[x]")
-	} else {
-		check = "[ ]"
-	}
-
-	// Package name with selection indicator
-	var name string
-	if index == m.Index() {
-		name = d.selectedStyle.Render("> " + pi.name)
-	} else {
-		name = d.unselectedStyle.Render("  " + pi.name)
-	}
-
-	fmt.Fprintf(w, "%s %s", check, name)
 }
 
 // ──────────────────────────────────────────────
@@ -180,7 +144,7 @@ type importPickerModel struct {
 	width     int
 	height    int
 
-	delegate checkboxDelegate
+	delegate components.CheckboxDelegate
 }
 
 // NewImportPicker creates a fully populated ImportPicker model.
@@ -259,7 +223,7 @@ func newImportPickerWithData(
 		selectedNode[p.Name+"\x00"+p.Manager] = true
 	}
 
-	delegate := newCheckboxDelegate()
+	delegate := newImportDelegate()
 
 	makeList := func(items []list.Item) list.Model {
 		l := list.New(items, delegate, 80, 20)
@@ -659,15 +623,7 @@ func (m *importPickerModel) setListItems(lst *list.Model, pkgs []string, isSelec
 
 // tabView renders the tab bar.
 func (m *importPickerModel) tabView() string {
-	var parts []string
-	for i, tab := range m.tabs {
-		if i == m.active {
-			parts = append(parts, tui.Theme.ActiveTab.Render(tab))
-		} else {
-			parts = append(parts, tui.Theme.InactiveTab.Render(tab))
-		}
-	}
-	return strings.Join(parts, "   ")
+	return components.NewTabBar(m.tabs, m.active).View()
 }
 
 // activeListView renders the list for the currently active tab.

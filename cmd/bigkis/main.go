@@ -18,9 +18,12 @@ import (
 	"github.com/0xGurg/bigkis/internal/lockfile"
 	"github.com/0xGurg/bigkis/internal/plugin"
 	"github.com/0xGurg/bigkis/internal/plugin/aur"
+	"github.com/0xGurg/bigkis/internal/plugin/cargo"
 	"github.com/0xGurg/bigkis/internal/plugin/flatpak"
+	"github.com/0xGurg/bigkis/internal/plugin/goinstall"
 	"github.com/0xGurg/bigkis/internal/plugin/node"
 	"github.com/0xGurg/bigkis/internal/plugin/pacman"
+	"github.com/0xGurg/bigkis/internal/plugin/pipx"
 	"github.com/0xGurg/bigkis/internal/rollback"
 	"github.com/0xGurg/bigkis/internal/runner"
 	"github.com/0xGurg/bigkis/internal/state"
@@ -1050,6 +1053,9 @@ func bootstrapTo(c *cli.Context, logTo *os.File) (*config.Config, *state.State, 
 		reg.Register(aur.New())
 		reg.Register(flatpak.New())
 		reg.Register(node.New())
+		reg.Register(cargo.New())
+		reg.Register(pipx.New())
+		reg.Register(goinstall.New())
 	}
 
 	return cfg, st, reg, u, nil
