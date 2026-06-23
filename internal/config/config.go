@@ -13,17 +13,23 @@ import (
 
 // Plugin names used in [settings].enabled and on-disk state keys.
 const (
-	PluginPacman  = "pacman"
-	PluginAUR     = "aur"
-	PluginFlatpak = "flatpak"
-	PluginNode    = "node"
+	PluginPacman    = "pacman"
+	PluginAUR       = "aur"
+	PluginFlatpak   = "flatpak"
+	PluginNode      = "node"
+	PluginCargo     = "cargo"
+	PluginPipx      = "pipx"
+	PluginGoInstall = "goinstall"
 )
 
 var validPlugins = map[string]bool{
-	PluginPacman:  true,
-	PluginAUR:     true,
-	PluginFlatpak: true,
-	PluginNode:    true,
+	PluginPacman:    true,
+	PluginAUR:       true,
+	PluginFlatpak:   true,
+	PluginNode:      true,
+	PluginCargo:     true,
+	PluginPipx:      true,
+	PluginGoInstall: true,
 }
 
 var validAURHelpers = map[string]bool{"yay": true, "paru": true}
@@ -48,13 +54,16 @@ var validPruneModes = map[string]bool{
 // Config is the full TOML document, after include merging, host overlay
 // application, and group expansion.
 type Config struct {
-	Settings Settings               `toml:"settings"`
-	Pacman   Pacman                 `toml:"pacman"`
-	AUR      AUR                    `toml:"aur"`
-	Flatpak  Flatpak                `toml:"flatpak"`
-	Node     Node                   `toml:"node"`
-	Groups   map[string][]string    `toml:"groups"`
-	Hosts    map[string]HostOverlay `toml:"hosts"`
+	Settings  Settings               `toml:"settings"`
+	Pacman    Pacman                 `toml:"pacman"`
+	AUR       AUR                    `toml:"aur"`
+	Flatpak   Flatpak                `toml:"flatpak"`
+	Node      Node                   `toml:"node"`
+	Cargo     CargoSection           `toml:"cargo"`
+	Pipx      PipxSection            `toml:"pipx"`
+	GoInstall GoInstallSection       `toml:"goinstall"`
+	Groups    map[string][]string    `toml:"groups"`
+	Hosts     map[string]HostOverlay `toml:"hosts"`
 
 	// Path is the absolute path of the top-level config that was loaded.
 	Path string `toml:"-"`
@@ -116,14 +125,38 @@ type NodePackage struct {
 	Manager string `toml:"manager"`
 }
 
+// CargoSection declares packages installed via `cargo install`.
+type CargoSection struct {
+	Packages []string `toml:"packages"`
+	Ignored  []string `toml:"ignored"`
+	Groups   []string `toml:"groups"`
+}
+
+// PipxSection declares packages installed via `pipx install`.
+type PipxSection struct {
+	Packages []string `toml:"packages"`
+	Ignored  []string `toml:"ignored"`
+	Groups   []string `toml:"groups"`
+}
+
+// GoInstallSection declares packages installed via `go install`.
+type GoInstallSection struct {
+	Packages []string `toml:"packages"`
+	Ignored  []string `toml:"ignored"`
+	Groups   []string `toml:"groups"`
+}
+
 // HostOverlay is a section under `[hosts.<hostname>]` that, when the current
 // machine's hostname matches, is overlaid on top of the merged configuration.
 type HostOverlay struct {
-	Settings Settings `toml:"settings"`
-	Pacman   Pacman   `toml:"pacman"`
-	AUR      AUR      `toml:"aur"`
-	Flatpak  Flatpak  `toml:"flatpak"`
-	Node     Node     `toml:"node"`
+	Settings  Settings        `toml:"settings"`
+	Pacman    Pacman          `toml:"pacman"`
+	AUR       AUR             `toml:"aur"`
+	Flatpak   Flatpak         `toml:"flatpak"`
+	Node      Node            `toml:"node"`
+	Cargo     CargoSection    `toml:"cargo"`
+	Pipx      PipxSection     `toml:"pipx"`
+	GoInstall GoInstallSection `toml:"goinstall"`
 }
 
 // Load resolves the config path, parses the file plus any includes, applies
@@ -243,6 +276,9 @@ func applyOverlay(base, overlay *Config) {
 	mergeAUR(&base.AUR, &overlay.AUR)
 	mergeFlatpak(&base.Flatpak, &overlay.Flatpak)
 	mergeNode(&base.Node, &overlay.Node)
+	mergeCargo(&base.Cargo, &overlay.Cargo)
+	mergePipx(&base.Pipx, &overlay.Pipx)
+	mergeGoInstall(&base.GoInstall, &overlay.GoInstall)
 
 	if len(overlay.Groups) > 0 {
 		if base.Groups == nil {
@@ -263,6 +299,9 @@ func applyOverlay(base, overlay *Config) {
 			mergeAUR(&merged.AUR, &v.AUR)
 			mergeFlatpak(&merged.Flatpak, &v.Flatpak)
 			mergeNode(&merged.Node, &v.Node)
+			mergeCargo(&merged.Cargo, &v.Cargo)
+			mergePipx(&merged.Pipx, &v.Pipx)
+			mergeGoInstall(&merged.GoInstall, &v.GoInstall)
 			merged.Settings.Enabled = mergeStrings(merged.Settings.Enabled, v.Settings.Enabled)
 			if v.Settings.AURHelper != "" {
 				merged.Settings.AURHelper = v.Settings.AURHelper
@@ -331,6 +370,24 @@ func mergeNode(b, o *Node) {
 	}
 }
 
+func mergeCargo(b, o *CargoSection) {
+	b.Packages = mergeStrings(b.Packages, o.Packages)
+	b.Ignored = mergeStrings(b.Ignored, o.Ignored)
+	b.Groups = mergeStrings(b.Groups, o.Groups)
+}
+
+func mergePipx(b, o *PipxSection) {
+	b.Packages = mergeStrings(b.Packages, o.Packages)
+	b.Ignored = mergeStrings(b.Ignored, o.Ignored)
+	b.Groups = mergeStrings(b.Groups, o.Groups)
+}
+
+func mergeGoInstall(b, o *GoInstallSection) {
+	b.Packages = mergeStrings(b.Packages, o.Packages)
+	b.Ignored = mergeStrings(b.Ignored, o.Ignored)
+	b.Groups = mergeStrings(b.Groups, o.Groups)
+}
+
 func mergeStrings(a, b []string) []string {
 	seen := map[string]struct{}{}
 	out := make([]string, 0, len(a)+len(b))
@@ -385,6 +442,9 @@ func (c *Config) applyHostOverlay(hostname string) {
 	mergeAUR(&c.AUR, &overlay.AUR)
 	mergeFlatpak(&c.Flatpak, &overlay.Flatpak)
 	mergeNode(&c.Node, &overlay.Node)
+	mergeCargo(&c.Cargo, &overlay.Cargo)
+	mergePipx(&c.Pipx, &overlay.Pipx)
+	mergeGoInstall(&c.GoInstall, &overlay.GoInstall)
 }
 
 // expandGroups inlines named groups from [groups] into each plugin's
@@ -413,11 +473,23 @@ func (c *Config) expandGroups() error {
 	if err := expand(c.Node.Groups, &c.Node.Packages); err != nil {
 		return fmt.Errorf("node.groups: %w", err)
 	}
+	if err := expand(c.Cargo.Groups, &c.Cargo.Packages); err != nil {
+		return fmt.Errorf("cargo.groups: %w", err)
+	}
+	if err := expand(c.Pipx.Groups, &c.Pipx.Packages); err != nil {
+		return fmt.Errorf("pipx.groups: %w", err)
+	}
+	if err := expand(c.GoInstall.Groups, &c.GoInstall.Packages); err != nil {
+		return fmt.Errorf("goinstall.groups: %w", err)
+	}
 	// After expansion plugins should not see the group references.
 	c.Pacman.Groups = nil
 	c.AUR.Groups = nil
 	c.Flatpak.Groups = nil
 	c.Node.Groups = nil
+	c.Cargo.Groups = nil
+	c.Pipx.Groups = nil
+	c.GoInstall.Groups = nil
 	return nil
 }
 
@@ -447,7 +519,7 @@ func (c *Config) Validate() error {
 	seen := map[string]bool{}
 	for _, p := range c.Settings.Enabled {
 		if !validPlugins[p] {
-			return fmt.Errorf("settings.enabled: unknown plugin %q (valid: pacman, aur, flatpak, node)", p)
+			return fmt.Errorf("settings.enabled: unknown plugin %q (valid: pacman, aur, flatpak, node, cargo, pipx, goinstall)", p)
 		}
 		if seen[p] {
 			return fmt.Errorf("settings.enabled: duplicate plugin %q", p)

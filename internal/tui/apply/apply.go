@@ -11,7 +11,6 @@ package apply
 
 import (
 	"fmt"
-	"io"
 	"strings"
 
 	"github.com/charmbracelet/bubbles/key"
@@ -39,30 +38,47 @@ type PluginPlan struct {
 }
 
 // checkedOp is a single operation with a checkbox state (Phase 5 selective).
+// It implements components.CheckboxItem.
 type checkedOp struct {
 	op      plugin.Operation
 	checked bool
 }
 
-func (c checkedOp) FilterValue() string { return c.op.Target }
+func (c checkedOp) FilterValue() string {
+	if c.op.Detail != "" {
+		return fmt.Sprintf("%s (%s)", c.op.Target, c.op.Detail)
+	}
+	return c.op.Target
+}
 func (c checkedOp) Title() string {
 	check := "[ ]"
 	if c.checked {
 		check = tui.Theme.Add.Render("[x]")
 	}
-	prefix := "+"
-	if c.op.Kind == plugin.OpRemove {
-		prefix = "-"
-	} else if c.op.Kind == plugin.OpUpdate {
-		prefix = "↑"
-	}
-	label := c.op.Target
-	if c.op.Detail != "" {
-		label = fmt.Sprintf("%s (%s)", c.op.Target, c.op.Detail)
-	}
-	return fmt.Sprintf("%s %s %s", check, prefix, label)
+	return fmt.Sprintf("%s %s %s", check, c.Prefix(), c.FilterValue())
 }
 func (c checkedOp) Description() string { return "" }
+func (c checkedOp) IsChecked() bool     { return c.checked }
+func (c checkedOp) Prefix() string {
+	switch c.op.Kind {
+	case plugin.OpRemove:
+		return "-"
+	case plugin.OpUpdate:
+		return "↑"
+	default:
+		return "+"
+	}
+}
+func (c checkedOp) PrefixStyle() lipgloss.Style {
+	switch c.op.Kind {
+	case plugin.OpRemove:
+		return tui.Theme.Remove
+	case plugin.OpUpdate:
+		return tui.Theme.Warn
+	default:
+		return tui.Theme.Add
+	}
+}
 
 // ──────────────────────────────────────────────
 // Key bindings
@@ -129,52 +145,8 @@ func (p pluginPlanItem) Title() string {
 func (p pluginPlanItem) Description() string { return "" }
 
 // ──────────────────────────────────────────────
-// Checkbox delegate (Phase 5)
+// Checkbox delegate (Phase 5) — uses shared components.CheckboxDelegate
 // ──────────────────────────────────────────────
-
-type checkboxDelegate struct {
-	selectedStyle   lipgloss.Style
-	unselectedStyle lipgloss.Style
-	checkedStyle    lipgloss.Style
-	addStyle        lipgloss.Style
-	removeStyle     lipgloss.Style
-	upgradeStyle    lipgloss.Style
-}
-
-func (d checkboxDelegate) Height() int                             { return 1 }
-func (d checkboxDelegate) Spacing() int                            { return 0 }
-func (d checkboxDelegate) Update(_ tea.Msg, _ *list.Model) tea.Cmd { return nil }
-
-func (d checkboxDelegate) Render(w io.Writer, m list.Model, index int, item list.Item) {
-	co, ok := item.(checkedOp)
-	if !ok {
-		return
-	}
-
-	check := "[ ]"
-	if co.checked {
-		check = d.checkedStyle.Render("[x]")
-	}
-
-	prefix := d.addStyle.Render("+")
-	if co.op.Kind == plugin.OpRemove {
-		prefix = d.removeStyle.Render("-")
-	} else if co.op.Kind == plugin.OpUpdate {
-		prefix = d.upgradeStyle.Render("↑")
-	}
-
-	label := co.op.Target
-	if co.op.Detail != "" {
-		label = fmt.Sprintf("%s (%s)", co.op.Target, co.op.Detail)
-	}
-
-	cursor := "  "
-	if index == m.Index() {
-		cursor = d.selectedStyle.Render("> ")
-	}
-
-	fmt.Fprintf(w, "%s%s %s %s", cursor, check, prefix, label)
-}
 
 // ──────────────────────────────────────────────
 // Model
@@ -206,7 +178,7 @@ type applyReviewModel struct {
 	selective     bool                    // true when --select is passed
 	opItems       []checkedOp             // current plugin's operations with checkboxes
 	opList        list.Model              // interactive operation list (replaces viewport when selective)
-	opDelegate    checkboxDelegate        // custom delegate for opList
+	opDelegate    components.CheckboxDelegate // shared delegate for opList
 	checkedOps    map[int]map[string]bool // per-plugin checked state by "kind:target"
 	focusRight    bool                    // false = left pane (plugin list), true = right pane (op list)
 	filteredPlans []PluginPlan            // filtered plans with only checked ops
@@ -254,13 +226,10 @@ func NewApplyReview(configPath string, plans []PluginPlan, dryRun bool, willUpgr
 
 	if selective {
 		m.checkedOps = make(map[int]map[string]bool)
-		m.opDelegate = checkboxDelegate{
-			selectedStyle:   tui.Theme.Selected,
-			unselectedStyle: lipgloss.NewStyle(),
-			checkedStyle:    tui.Theme.Add,
-			addStyle:        tui.Theme.Add,
-			removeStyle:     tui.Theme.Remove,
-			upgradeStyle:    tui.Theme.Warn,
+		m.opDelegate = components.CheckboxDelegate{
+			SelectedStyle:   tui.Theme.Selected,
+			UnselectedStyle: lipgloss.NewStyle(),
+			CheckedStyle:    tui.Theme.Add,
 		}
 
 		m.opList = list.New([]list.Item{}, m.opDelegate, 50, 20)

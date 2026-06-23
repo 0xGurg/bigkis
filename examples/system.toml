@@ -9,7 +9,7 @@
 
 [settings]
 # Plugins to run, in order. Removing a plugin from this list disables it.
-enabled = ["pacman", "aur", "flatpak", "node"]
+enabled = ["pacman", "aur", "flatpak", "node", "cargo", "pipx", "goinstall"]
 
 # AUR helper to wrap. One of: "yay", "paru".
 aur_helper = "yay"
@@ -124,3 +124,29 @@ manager = "yarn"
 [[node.package]]
 name = "create-react-app"
 manager = "npm"
+
+# Rust packages installed via `cargo install`.
+[cargo]
+packages = [
+  # "bat",
+  # "exa",
+  # "fd-find",
+]
+ignored = []
+
+# Python packages installed via `pipx install`.
+[pipx]
+packages = [
+  # "black",
+  # "ruff",
+  # "mypy",
+]
+ignored = []
+
+# Go packages installed via `go install`.
+[goinstall]
+packages = [
+  # "golang.org/x/tools/cmd/goimports@latest",
+  # "honnef.co/go/tools/cmd/staticcheck@latest",
+]
+ignored = []
